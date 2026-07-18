@@ -1,0 +1,9 @@
+face_match_kit
+Copyright 2026 MohammedSafwan10 and face_match_kit contributors
+
+This product depends on face_detection_tflite, licensed under Apache-2.0, and
+uses a MobileFaceNet-derived embedding model distributed by that dependency.
+
+MobileFaceNets: Efficient CNNs for Accurate Real-Time Face Verification on
+Mobile Devices, Sheng Chen, Yang Liu, Xiang Gao, and Zhen Han (2018),
+https://arxiv.org/abs/1804.07573
