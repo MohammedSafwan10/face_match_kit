@@ -1,8 +1,18 @@
+import 'package:camera/camera.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 
 import '../face_match_kit_base.dart';
 import '../face_match_models.dart';
+
+/// Camera stream format supported by the native frame conversion pipeline.
+///
+/// In particular, CameraX's one-plane NV21 stream is intentionally avoided;
+/// the detector backend consumes Android's multi-plane YUV420 representation.
+ImageFormatGroup cameraImageFormatForPlatform(TargetPlatform platform) =>
+    platform == TargetPlatform.iOS
+    ? ImageFormatGroup.bgra8888
+    : ImageFormatGroup.yuv420;
 
 FaceCameraRotation rotationForCameraFrame({
   required int width,
@@ -48,7 +58,9 @@ bool poseIsReady(FacePose pose, DetectedFace? face) {
   if (yaw == null) return false;
   return switch (pose) {
     FacePose.front => yaw >= -12 && yaw <= 12,
-    FacePose.slightLeft => yaw >= -42 && yaw <= -10,
-    FacePose.slightRight => yaw >= 10 && yaw <= 42,
+    // Public pose names describe the user's own direction, while detector yaw
+    // uses image coordinates (the opposite horizontal direction for selfies).
+    FacePose.slightLeft => yaw >= 10 && yaw <= 42,
+    FacePose.slightRight => yaw >= -42 && yaw <= -10,
   };
 }

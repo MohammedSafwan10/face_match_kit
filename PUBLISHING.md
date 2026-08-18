@@ -7,7 +7,7 @@ Do not run `dart pub publish` until every release gate below is complete.
       writing, or replace it with fully documented redistributable weights.
 - [x] Record and verify all five pipeline asset SHA-256 values at package
       initialization and bind them to the pipeline identifier.
-- [x] Pass formatting, analysis, unit tests, Android example build, and
+- [ ] Pass formatting, analysis, unit tests, Android example build, and
       `dart pub publish --dry-run` with zero warnings.
 - [ ] Pass API documentation generation. Dartdoc currently crashes in its own
       comment parser and remains a release blocker until resolved or fixed
@@ -22,8 +22,9 @@ Do not run `dart pub publish` until every release gate below is complete.
 - [ ] Replace or validate upstream eye-only alignment against a documented
       canonical eyes-and-nose alignment implementation.
 - [ ] Measure and reduce the release binary/native-model footprint.
-- [ ] Create the public repository URLs declared in `pubspec.yaml` and publish
-      from a verified pub.dev publisher.
+- [x] Create the public repository URLs declared in `pubspec.yaml`.
+- [ ] Publish from the verified `nexdark.com` pub.dev publisher only after all
+      other gates are complete.
 
 Version `0.1.0` must remain labelled beta. Do not publish `1.0.0` until the
 accuracy and platform-specific failure criteria in `benchmark/README.md` pass.

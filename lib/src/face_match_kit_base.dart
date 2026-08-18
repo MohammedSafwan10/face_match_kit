@@ -41,6 +41,7 @@ class FaceMatchKit {
   bool _disposed = false;
   int _activeOperations = 0;
   Completer<void>? _idleCompleter;
+  Future<void> _operationTail = Future<void>.value();
 
   FaceMatchKit._(this.config, this._detector);
 
@@ -68,8 +69,12 @@ class FaceMatchKit {
 
     final detector = await fd.FaceDetector.create(
       model: fd.FaceDetectionModel.frontCamera,
-      minScore: config.minimumDetectionScore,
-      minFaceSize: config.minimumFaceFraction,
+      // Keep raw detections visible to the guidance UI. Quality thresholds
+      // are applied by evaluateQuality(), where the host can explain how to
+      // improve instead of turning a small/dim face into an ambiguous
+      // "no face" result before landmarks are returned.
+      minScore: 0,
+      minFaceSize: 0,
     );
     return FaceMatchKit._(config, detector);
   }
@@ -98,11 +103,11 @@ class FaceMatchKit {
           error.message,
         ),
       );
-    } catch (error) {
+    } catch (_) {
       return FaceDetectionResult(
         failure: FaceMatchFailure(
           FaceMatchErrorCode.processingFailure,
-          'Face detection failed: $error',
+          'Face detection could not be completed.',
         ),
       );
     }
@@ -133,11 +138,11 @@ class FaceMatchKit {
         maxDim: 640,
       );
       return _publicDetection(faces);
-    } catch (error) {
+    } catch (_) {
       return FaceDetectionResult(
         failure: FaceMatchFailure(
           FaceMatchErrorCode.processingFailure,
-          'Live face detection failed: $error',
+          'Live face detection could not be completed.',
         ),
       );
     }
@@ -168,7 +173,7 @@ class FaceMatchKit {
         expectedPose: pose,
       );
       if (analysis.failure != null) {
-        return EnrollmentResult.failure(analysis.failure);
+        return EnrollmentResult.failure(analysis.failure!);
       }
       try {
         final embedding = await _detector.getFaceEmbedding(
@@ -185,11 +190,11 @@ class FaceMatchKit {
           );
         }
         embeddings[pose] = embedding.toList(growable: false);
-      } catch (error) {
+      } catch (_) {
         return EnrollmentResult.failure(
           FaceMatchFailure(
             FaceMatchErrorCode.processingFailure,
-            'Could not create the ${pose.name} embedding: $error',
+            'Could not create the ${pose.name} embedding.',
           ),
         );
       }
@@ -300,14 +305,14 @@ class FaceMatchKit {
                 'The captured face did not match the enrolled template.',
               ),
       );
-    } catch (error) {
+    } catch (_) {
       return VerificationResult(
         isMatch: false,
         similarity: 0,
         threshold: threshold,
         failure: FaceMatchFailure(
           FaceMatchErrorCode.processingFailure,
-          'Face verification failed: $error',
+          'Face verification could not be completed.',
         ),
       );
     }
@@ -403,11 +408,11 @@ class FaceMatchKit {
       return _StillAnalysis.failure(
         FaceMatchFailure(FaceMatchErrorCode.invalidImage, error.message),
       );
-    } catch (error) {
+    } catch (_) {
       return _StillAnalysis.failure(
         FaceMatchFailure(
           FaceMatchErrorCode.processingFailure,
-          'Face processing failed: $error',
+          'Face processing could not be completed.',
         ),
       );
     }
@@ -459,8 +464,8 @@ class FaceMatchKit {
     if (yaw == null) return false;
     return switch (pose) {
       FacePose.front => yaw >= -12 && yaw <= 12,
-      FacePose.slightLeft => yaw >= -42 && yaw <= -10,
-      FacePose.slightRight => yaw >= 10 && yaw <= 42,
+      FacePose.slightLeft => yaw >= 10 && yaw <= 42,
+      FacePose.slightRight => yaw >= -42 && yaw <= -10,
     };
   }
 
@@ -493,8 +498,11 @@ class FaceMatchKit {
       throw StateError('FaceMatchKit has been disposed.');
     }
     _activeOperations++;
+    final previous = _operationTail;
+    final result = previous.then((_) => operation());
+    _operationTail = result.then<void>((_) {}, onError: (_, _) {});
     try {
-      return await operation();
+      return await result;
     } finally {
       _activeOperations--;
       if (_activeOperations == 0 && _idleCompleter != null) {

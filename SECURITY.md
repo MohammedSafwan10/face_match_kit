@@ -18,13 +18,17 @@ presentation-attack detection for high-risk actions.
 ## Template handling
 
 - Treat serialized templates as sensitive biometric data.
-- Encrypt them in transit and at rest using application-controlled keys.
+- Protect them in transit and at rest with authenticated encryption (or a
+  separately verified MAC/signature) using application-controlled keys.
 - Never log embeddings, templates, or captured images.
-- Bind templates to the correct account and tenant.
+- Bind templates to the correct account, tenant, schema version, and revocation
+  state; prevent rollback to an older template.
 - Provide consent, revocation, deletion, and retention controls.
 - Reject templates whose schema, model hash, or pipeline version differs.
 - Re-enroll rather than attempting to convert an embedding without source images.
 
-Camera widgets do not upload data and delete their temporary capture after it is
-read. A host application that saves images or templates assumes responsibility
-for that storage.
+Camera widgets do not upload data and make a best-effort attempt to delete each
+temporary capture after it is read. Operating-system/plugin behavior can make
+deletion unverifiable, and managed-memory image bytes are not guaranteed to be
+zeroized before garbage collection. A host application that saves images or
+templates assumes responsibility for that storage.

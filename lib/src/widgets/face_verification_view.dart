@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:io';
 
 import 'package:camera/camera.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
@@ -10,6 +11,7 @@ import '../face_match_kit_base.dart';
 import '../face_match_models.dart';
 import '../liveness.dart';
 import 'camera_helpers.dart';
+import 'face_capture_chrome.dart';
 import 'face_camera_frame.dart';
 import 'face_match_theme.dart';
 
@@ -18,9 +20,11 @@ class FaceVerificationView extends StatefulWidget {
   final FaceMatchKit? kit;
   final FaceMatchConfig config;
   final ValueChanged<VerificationResult> onCompleted;
+  final ValueChanged<FaceMatchFailure>? onError;
   final FaceMatchTheme theme;
   final FaceMatchTexts texts;
   final FaceOverlayBuilder? overlayBuilder;
+  final bool showDebugInfo;
 
   const FaceVerificationView({
     super.key,
@@ -28,9 +32,11 @@ class FaceVerificationView extends StatefulWidget {
     this.kit,
     this.config = const FaceMatchConfig(),
     required this.onCompleted,
+    this.onError,
     this.theme = const FaceMatchTheme(),
     this.texts = const FaceMatchTexts(),
     this.overlayBuilder,
+    this.showDebugInfo = false,
   });
 
   @override
@@ -50,14 +56,23 @@ class _FaceVerificationViewState extends State<FaceVerificationView>
   var _processingFrame = false;
   var _ownsKit = false;
   var _initializing = false;
+  var _reconfiguring = false;
   var _appActive = true;
   var _initializationGeneration = 0;
+  var _operationGeneration = 0;
   var _missingFaceFrames = 0;
   var _autoCaptureScheduled = false;
+  var _retryAfterOperation = false;
+  DateTime? _livenessCompletedAt;
 
   FaceMatchConfig get _effectiveConfig => widget.kit?.config ?? widget.config;
+  bool get _livenessExpired =>
+      _livenessCompletedAt != null &&
+      DateTime.now().difference(_livenessCompletedAt!) >
+          _effectiveConfig.livenessCompletionTimeout;
   bool get _livenessComplete =>
-      !_effectiveConfig.livenessEnabled || (_liveness?.isComplete ?? false);
+      !_effectiveConfig.livenessEnabled ||
+      ((_liveness?.isComplete ?? false) && !_livenessExpired);
   bool get _captureReady =>
       _livenessComplete &&
       _face != null &&
@@ -76,13 +91,50 @@ class _FaceVerificationViewState extends State<FaceVerificationView>
   @override
   void didUpdateWidget(covariant FaceVerificationView oldWidget) {
     super.didUpdateWidget(oldWidget);
+    final kitChanged = !identical(oldWidget.kit, widget.kit);
+    final configChanged =
+        widget.kit == null && oldWidget.config != widget.config;
+    if (kitChanged || configChanged) {
+      unawaited(_reconfigure());
+      return;
+    }
     if (!identical(oldWidget.template, widget.template)) {
-      unawaited(_retry());
+      _operationGeneration++;
+      if (_busy) {
+        _retryAfterOperation = true;
+      } else {
+        unawaited(_retry());
+      }
+    }
+  }
+
+  Future<void> _reconfigure() async {
+    if (_reconfiguring) return;
+    _reconfiguring = true;
+    try {
+      _operationGeneration++;
+      await _disposeCamera();
+      final oldKit = _kit;
+      final disposeOldKit = _ownsKit;
+      _kit = null;
+      _ownsKit = false;
+      _retryAfterOperation = false;
+      _setState(() {
+        _face = null;
+        _failure = null;
+        _result = null;
+      });
+      if (disposeOldKit) await oldKit?.dispose();
+    } finally {
+      _reconfiguring = false;
+      if (mounted && _appActive) unawaited(_initialize());
     }
   }
 
   Future<void> _initialize() async {
-    if (_initializing || _camera != null || !_appActive) return;
+    if (_initializing || _reconfiguring || _camera != null || !_appActive) {
+      return;
+    }
     _initializing = true;
     final generation = _initializationGeneration;
     CameraController? controller;
@@ -111,9 +163,10 @@ class _FaceVerificationViewState extends State<FaceVerificationView>
         description,
         ResolutionPreset.high,
         enableAudio: false,
-        imageFormatGroup: Platform.isIOS
-            ? ImageFormatGroup.bgra8888
-            : ImageFormatGroup.nv21,
+        // Keep CameraX output compatible with the detector's multi-plane
+        // Android frame converter. Requested NV21 arrives as one undecodable
+        // plane and otherwise looks like a permanent "no face" result.
+        imageFormatGroup: cameraImageFormatForPlatform(defaultTargetPlatform),
       );
       await controller.initialize();
       if (!_isCurrentInitialization(generation)) return;
@@ -128,9 +181,13 @@ class _FaceVerificationViewState extends State<FaceVerificationView>
       if (identical(_camera, controller)) _camera = null;
       await controller?.dispose();
       controller = null;
-      debugPrint('Face verification initialization failed: $error');
+      if (widget.showDebugInfo) {
+        debugPrint('Face verification initialization failed: $error');
+      }
       if (!_isCurrentInitialization(generation)) return;
-      _setState(() => _failure = _cameraFailure(error, initialization: true));
+      final failure = _cameraFailure(error, initialization: true);
+      _setState(() => _failure = failure);
+      _notifyError(failure);
     } finally {
       await controller?.dispose();
       _initializing = false;
@@ -146,6 +203,7 @@ class _FaceVerificationViewState extends State<FaceVerificationView>
   void _resetLiveness() {
     _missingFaceFrames = 0;
     _autoCaptureScheduled = false;
+    _livenessCompletedAt = null;
     _liveness = _effectiveConfig.livenessEnabled
         ? LivenessSession(
             LivenessChallenge.random(
@@ -159,6 +217,7 @@ class _FaceVerificationViewState extends State<FaceVerificationView>
   Future<void> _processFrame(CameraImage image) async {
     final camera = _camera;
     final description = _description;
+    final generation = _initializationGeneration;
     if (_processingFrame ||
         _busy ||
         !mounted ||
@@ -180,8 +239,14 @@ class _FaceVerificationViewState extends State<FaceVerificationView>
         ),
         isBgra: Platform.isIOS,
       );
+      if (!mounted ||
+          generation != _initializationGeneration ||
+          !identical(camera, _camera)) {
+        return;
+      }
       final face = detection.hasExactlyOneFace ? detection.faces.single : null;
       var livenessJustCompleted = false;
+      if (_livenessExpired) _resetLiveness();
       if (face == null) {
         _missingFaceFrames++;
         if (_missingFaceFrames >= _effectiveConfig.livenessFaceLossTolerance) {
@@ -193,6 +258,7 @@ class _FaceVerificationViewState extends State<FaceVerificationView>
           final wasComplete = _liveness!.isComplete;
           _liveness!.update(face);
           livenessJustCompleted = !wasComplete && _liveness!.isComplete;
+          if (livenessJustCompleted) _livenessCompletedAt = DateTime.now();
         }
       }
       final quality = face == null
@@ -226,34 +292,55 @@ class _FaceVerificationViewState extends State<FaceVerificationView>
       _autoCaptureScheduled = false;
       return;
     }
+    final operation = ++_operationGeneration;
+    final camera = _camera!;
+    final template = widget.template;
+    final threshold = _effectiveConfig.verificationThreshold;
     _setState(() => _busy = true);
     XFile? file;
     try {
-      await _camera!.stopImageStream();
-      file = await _camera!.takePicture();
+      await camera.stopImageStream();
+      file = await camera.takePicture();
       final bytes = await file.readAsBytes();
+      if (!_isCurrentOperation(operation)) return;
       final result = await _kit!.verify(
         imageBytes: bytes,
-        template: widget.template,
-        threshold: _effectiveConfig.verificationThreshold,
+        template: template,
+        threshold: threshold,
       );
+      if (!_isCurrentOperation(operation)) return;
       _setState(() {
         _result = result;
         _failure = result.failure;
       });
-      _notifyCompleted(result);
+      _notifyCompleted(result, operation);
     } catch (error) {
-      debugPrint('Face verification capture failed: $error');
+      if (widget.showDebugInfo) {
+        debugPrint('Face verification capture failed: $error');
+      }
+      if (!_isCurrentOperation(operation)) return;
       _resetLiveness();
-      _setState(() => _failure = _cameraFailure(error));
+      final failure = _cameraFailure(error);
+      _setState(() => _failure = failure);
+      _notifyError(failure);
       await _ensureImageStream();
     } finally {
       if (file != null) await _deleteCapture(file.path);
       _setState(() => _busy = false);
+      if (mounted && _appActive && !_reconfiguring && _camera == null) {
+        unawaited(_initialize());
+      } else if (_retryAfterOperation) {
+        _retryAfterOperation = false;
+        unawaited(_retry());
+      }
     }
   }
 
   Future<void> _retry() async {
+    if (_busy) {
+      _retryAfterOperation = true;
+      return;
+    }
     _setState(() {
       _failure = null;
       _result = null;
@@ -268,74 +355,184 @@ class _FaceVerificationViewState extends State<FaceVerificationView>
   String get _instruction {
     if (_result?.isMatch ?? false) return widget.texts.success;
     if (!_livenessComplete) {
-      return widget.texts.liveness(_liveness!.currentAction!);
+      return widget.texts.livenessStep(
+        _liveness!.currentAction!,
+        _liveness!.currentPhase,
+      );
     }
     return widget.texts.lookStraight;
   }
+
+  String get _captureBlockReason {
+    if (_busy) return 'processing';
+    if (_result != null) return 'result available';
+    if (!_livenessComplete) return 'complete liveness';
+    final face = _face;
+    if (face == null) return 'no single face';
+    final quality = _kit?.evaluateQuality(face, verification: true);
+    if (quality == null) return 'engine not ready';
+    if (!quality.isAcceptable) return quality.issues.first;
+    return 'READY';
+  }
+
+  String get _debugLabel {
+    final face = _face;
+    final liveness = _liveness;
+    final faceLine = face == null
+        ? 'face=no'
+        : 'face=yes score=${face.score.toStringAsFixed(2)} '
+              'size=${face.faceFraction.toStringAsFixed(2)} '
+              'yaw=${_number(face.yaw)} pitch=${_number(face.pitch)}';
+    final eyeLine = face == null
+        ? 'eyes=--/--'
+        : 'eyes=${_number(face.leftEyeOpenProbability)}/'
+              '${_number(face.rightEyeOpenProbability)} '
+              'roll=${_number(face.roll)}';
+    final liveLine = liveness == null
+        ? 'liveness=disabled'
+        : 'live=${liveness.completedActions}/${liveness.totalActions} '
+              '${liveness.currentAction?.name ?? 'done'} '
+              'phase=${liveness.currentPhase.name} '
+              'stable=${liveness.stableFrames} resets=${liveness.resetCount}';
+    return '$faceLine\n$eyeLine\n$liveLine\nbutton=$_captureBlockReason';
+  }
+
+  String _number(double? value) => value?.toStringAsFixed(2) ?? '--';
 
   @override
   Widget build(BuildContext context) {
     final camera = _camera;
     return ColoredBox(
       color: widget.theme.backgroundColor,
-      child: Padding(
-        padding: const EdgeInsets.all(20),
-        child: camera == null || !camera.value.isInitialized
-            ? Center(
-                child: Text(
-                  _failure?.message ?? widget.texts.initializing,
-                  style: TextStyle(
-                    color: _failure == null
-                        ? widget.theme.foregroundColor
-                        : widget.theme.errorColor,
-                  ),
-                ),
-              )
-            : Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  FaceCameraFrame(
-                    controller: camera,
-                    face: _face,
-                    isReady: _captureReady,
-                    theme: widget.theme,
-                    overlayBuilder: widget.overlayBuilder,
-                  ),
-                  const SizedBox(height: 16),
-                  Text(
-                    _failure?.message ?? _instruction,
-                    textAlign: TextAlign.center,
-                    style: TextStyle(
-                      color: _failure == null
-                          ? widget.theme.foregroundColor
-                          : widget.theme.errorColor,
-                      fontSize: 18,
-                      fontWeight: FontWeight.w600,
-                    ),
-                  ),
-                  if (_result != null) ...[
-                    const SizedBox(height: 8),
-                    Text(
-                      widget.texts.similarity(_result!.similarity),
-                      style: TextStyle(color: widget.theme.foregroundColor),
-                    ),
-                  ],
-                  const SizedBox(height: 16),
-                  if (_result == null)
-                    FilledButton.icon(
-                      onPressed: _captureReady ? _verify : null,
-                      icon: const Icon(Icons.face_outlined),
-                      label: Text(
-                        _busy ? widget.texts.processing : widget.texts.verify,
+      child: LayoutBuilder(
+        builder: (context, constraints) {
+          final compact = constraints.maxHeight < 690;
+          return Padding(
+            padding: EdgeInsets.fromLTRB(16, compact ? 8 : 12, 16, 12),
+            child: camera == null || !camera.value.isInitialized
+                ? Center(
+                    child: Text(
+                      _failure?.message ?? widget.texts.initializing,
+                      textAlign: TextAlign.center,
+                      style: TextStyle(
+                        color: _failure == null
+                            ? widget.theme.foregroundColor
+                            : widget.theme.errorColor,
                       ),
-                    )
-                  else if (!_result!.isMatch)
-                    OutlinedButton(
-                      onPressed: _retry,
-                      child: Text(widget.texts.retry),
                     ),
-                ],
-              ),
+                  )
+                : Column(
+                    children: [
+                      FaceFriendlyHeader(
+                        title: widget.texts.verificationTitle,
+                        accentColor: widget.theme.secondaryAccentColor,
+                        theme: widget.theme,
+                      ),
+                      SizedBox(height: compact ? 10 : 14),
+                      FacePoseProgress(
+                        activeIndex: _livenessComplete ? 2 : 1,
+                        accentColor: widget.theme.secondaryAccentColor,
+                        theme: widget.theme,
+                      ),
+                      SizedBox(height: compact ? 10 : 14),
+                      Expanded(
+                        child: Center(
+                          child: ConstrainedBox(
+                            constraints: const BoxConstraints(maxWidth: 520),
+                            child: SizedBox.expand(
+                              child: FaceCameraFrame(
+                                controller: camera,
+                                face: _face,
+                                isReady:
+                                    _captureReady ||
+                                    (_result?.isMatch ?? false),
+                                theme: widget.theme,
+                                topOverlay: FaceCameraTitle(
+                                  label: _failure?.message ?? _instruction,
+                                ),
+                                bottomOverlay: FaceCameraPill(
+                                  label: _result?.isMatch ?? false
+                                      ? widget.texts.success
+                                      : _face != null
+                                      ? widget.texts.faceReady
+                                      : widget.texts.centerFace,
+                                  icon: _result?.isMatch ?? false
+                                      ? Icons.verified_rounded
+                                      : _face != null
+                                      ? Icons.check_rounded
+                                      : Icons.face_rounded,
+                                  accentColor:
+                                      widget.theme.secondaryAccentColor,
+                                ),
+                                overlayBuilder: widget.overlayBuilder,
+                                debugLabel: widget.showDebugInfo
+                                    ? _debugLabel
+                                    : null,
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
+                      SizedBox(height: compact ? 10 : 16),
+                      if (_result == null)
+                        SizedBox(
+                          width: double.infinity,
+                          child: FilledButton(
+                            style: FilledButton.styleFrom(
+                              minimumSize: const Size.fromHeight(56),
+                              backgroundColor:
+                                  widget.theme.secondaryAccentColor,
+                              foregroundColor: Colors.white,
+                              disabledBackgroundColor: widget
+                                  .theme
+                                  .secondaryAccentColor
+                                  .withValues(alpha: 0.24),
+                              disabledForegroundColor: widget
+                                  .theme
+                                  .foregroundColor
+                                  .withValues(alpha: 0.58),
+                              shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(22),
+                              ),
+                            ),
+                            onPressed: _captureReady ? _verify : null,
+                            child: Semantics(
+                              label: _busy
+                                  ? widget.texts.processing
+                                  : widget.texts.verify,
+                              child: Icon(
+                                _busy
+                                    ? Icons.hourglass_top_rounded
+                                    : Icons.center_focus_strong_rounded,
+                                size: 30,
+                              ),
+                            ),
+                          ),
+                        )
+                      else if (!_result!.isMatch)
+                        SizedBox(
+                          width: double.infinity,
+                          child: OutlinedButton.icon(
+                            style: OutlinedButton.styleFrom(
+                              minimumSize: const Size.fromHeight(56),
+                              foregroundColor:
+                                  widget.theme.secondaryAccentColor,
+                              side: BorderSide(
+                                color: widget.theme.secondaryAccentColor,
+                              ),
+                              shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(22),
+                              ),
+                            ),
+                            onPressed: _busy ? null : _retry,
+                            icon: const Icon(Icons.refresh_rounded),
+                            label: Text(widget.texts.retry),
+                          ),
+                        ),
+                    ],
+                  ),
+          );
+        },
       ),
     );
   }
@@ -359,6 +556,7 @@ class _FaceVerificationViewState extends State<FaceVerificationView>
 
   Future<void> _disposeCamera() async {
     _initializationGeneration++;
+    _operationGeneration++;
     final camera = _camera;
     _camera = null;
     await camera?.dispose();
@@ -366,6 +564,9 @@ class _FaceVerificationViewState extends State<FaceVerificationView>
 
   bool _isCurrentInitialization(int generation) =>
       mounted && _appActive && generation == _initializationGeneration;
+
+  bool _isCurrentOperation(int generation) =>
+      mounted && _appActive && generation == _operationGeneration;
 
   Future<void> _ensureImageStream() async {
     final camera = _camera;
@@ -401,7 +602,8 @@ class _FaceVerificationViewState extends State<FaceVerificationView>
     );
   }
 
-  void _notifyCompleted(VerificationResult result) {
+  void _notifyCompleted(VerificationResult result, int operation) {
+    if (!_isCurrentOperation(operation)) return;
     try {
       widget.onCompleted(result);
     } catch (error, stackTrace) {
@@ -411,6 +613,22 @@ class _FaceVerificationViewState extends State<FaceVerificationView>
           stack: stackTrace,
           library: 'face_match_kit',
           context: ErrorDescription('while calling onCompleted'),
+        ),
+      );
+    }
+  }
+
+  void _notifyError(FaceMatchFailure failure) {
+    if (!mounted) return;
+    try {
+      widget.onError?.call(failure);
+    } catch (error, stackTrace) {
+      FlutterError.reportError(
+        FlutterErrorDetails(
+          exception: error,
+          stack: stackTrace,
+          library: 'face_match_kit',
+          context: ErrorDescription('while calling onError'),
         ),
       );
     }
@@ -427,6 +645,7 @@ class _FaceVerificationViewState extends State<FaceVerificationView>
   @override
   void dispose() {
     _appActive = false;
+    _operationGeneration++;
     WidgetsBinding.instance.removeObserver(this);
     unawaited(_disposeCamera());
     if (_ownsKit) unawaited(_kit?.dispose());

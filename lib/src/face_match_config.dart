@@ -36,6 +36,9 @@ class FaceMatchConfig {
   /// Maximum time allowed to complete one basic liveness action.
   final Duration livenessActionTimeout;
 
+  /// How long a completed challenge remains valid before capture.
+  final Duration livenessCompletionTimeout;
+
   /// Live frames that may miss a face before the challenge is restarted.
   final int livenessFaceLossTolerance;
 
@@ -53,6 +56,7 @@ class FaceMatchConfig {
     this.livenessEnabled = true,
     this.livenessActionCount = 2,
     this.livenessActionTimeout = const Duration(seconds: 10),
+    this.livenessCompletionTimeout = const Duration(seconds: 3),
     this.livenessFaceLossTolerance = 3,
     this.liveDetectionInterval = const Duration(milliseconds: 120),
   });
@@ -91,6 +95,13 @@ class FaceMatchConfig {
         'Must be positive.',
       );
     }
+    if (livenessCompletionTimeout <= Duration.zero) {
+      throw ArgumentError.value(
+        livenessCompletionTimeout,
+        'livenessCompletionTimeout',
+        'Must be positive.',
+      );
+    }
     if (livenessFaceLossTolerance < 1) {
       throw ArgumentError.value(
         livenessFaceLossTolerance,
@@ -126,4 +137,40 @@ class FaceMatchConfig {
       );
     }
   }
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is FaceMatchConfig &&
+          verificationThreshold == other.verificationThreshold &&
+          enrollmentConsistencyThreshold ==
+              other.enrollmentConsistencyThreshold &&
+          minimumFaceFraction == other.minimumFaceFraction &&
+          minimumDetectionScore == other.minimumDetectionScore &&
+          maximumPitch == other.maximumPitch &&
+          maximumRoll == other.maximumRoll &&
+          maximumVerificationYaw == other.maximumVerificationYaw &&
+          livenessEnabled == other.livenessEnabled &&
+          livenessActionCount == other.livenessActionCount &&
+          livenessActionTimeout == other.livenessActionTimeout &&
+          livenessCompletionTimeout == other.livenessCompletionTimeout &&
+          livenessFaceLossTolerance == other.livenessFaceLossTolerance &&
+          liveDetectionInterval == other.liveDetectionInterval;
+
+  @override
+  int get hashCode => Object.hash(
+    verificationThreshold,
+    enrollmentConsistencyThreshold,
+    minimumFaceFraction,
+    minimumDetectionScore,
+    maximumPitch,
+    maximumRoll,
+    maximumVerificationYaw,
+    livenessEnabled,
+    livenessActionCount,
+    livenessActionTimeout,
+    livenessCompletionTimeout,
+    livenessFaceLossTolerance,
+    liveDetectionInterval,
+  );
 }

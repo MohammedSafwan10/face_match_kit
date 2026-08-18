@@ -119,6 +119,7 @@ class FaceSample {
 /// Versioned and portable biometric template.
 class FaceTemplate {
   static const int currentSchemaVersion = 1;
+  static const int maximumSerializedDimensions = 4096;
 
   final int schemaVersion;
   final String modelId;
@@ -201,6 +202,10 @@ class FaceTemplate {
 
   factory FaceTemplate.fromJson(Map<String, dynamic> json) {
     try {
+      final dimensions = _strictInteger(json['dimensions'], 'dimensions');
+      if (dimensions <= 0 || dimensions > maximumSerializedDimensions) {
+        throw const FormatException('Invalid face template dimensions.');
+      }
       final rawSamples = Map<String, dynamic>.from(json['samples'] as Map);
       final expectedKeys = FacePose.values.map((pose) => pose.name).toSet();
       if (rawSamples.keys.toSet().difference(expectedKeys).isNotEmpty ||
@@ -210,19 +215,28 @@ class FaceTemplate {
           'slightRight.',
         );
       }
+      for (final value in rawSamples.values) {
+        if (value is! List || value.length != dimensions) {
+          throw const FormatException('Invalid sample embedding dimensions.');
+        }
+      }
+      final rawCentroid = json['centroid'];
+      if (rawCentroid is! List || rawCentroid.length != dimensions) {
+        throw const FormatException('Invalid centroid embedding dimensions.');
+      }
       return FaceTemplate(
         schemaVersion: _strictInteger(json['schemaVersion'], 'schemaVersion'),
         modelId: json['modelId'] as String,
         modelHash: json['modelHash'] as String,
         pipelineVersion: json['pipelineVersion'] as String,
-        dimensions: _strictInteger(json['dimensions'], 'dimensions'),
+        dimensions: dimensions,
         samples: {
           for (final pose in FacePose.values)
             pose: (rawSamples[pose.name] as List)
                 .map((value) => (value as num).toDouble())
                 .toList(),
         },
-        centroid: (json['centroid'] as List)
+        centroid: rawCentroid
             .map((value) => (value as num).toDouble())
             .toList(),
         createdAt: DateTime.parse(json['createdAt'] as String),
@@ -241,8 +255,12 @@ class EnrollmentResult {
   final FaceTemplate? template;
   final FaceMatchFailure? failure;
 
-  const EnrollmentResult.success(this.template) : failure = null;
-  const EnrollmentResult.failure(this.failure) : template = null;
+  const EnrollmentResult.success(FaceTemplate value)
+    : template = value,
+      failure = null;
+  const EnrollmentResult.failure(FaceMatchFailure value)
+    : failure = value,
+      template = null;
 
   bool get isSuccess => template != null && failure == null;
 }

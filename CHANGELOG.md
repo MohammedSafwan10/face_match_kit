@@ -15,3 +15,12 @@
   recovery, and immediate post-challenge capture.
 - Removed the separate runtime permission dependency; camera initialization now
   owns permission requests.
+- Fixed Android CameraX live detection by using its supported multi-plane
+  YUV420 stream instead of an undecodable one-plane NV21 stream.
+- Corrected selfie-facing left/right pose and liveness directions.
+- Added responsive enrollment/verification widgets, expanded text theming,
+  host error callbacks, and clearer capture guidance.
+- Added stale-frame and stale-operation guards for lifecycle, template, kit,
+  and configuration changes.
+- Bounded serialized template dimensions and sanitized public processing
+  failures so native exception details are not exposed.

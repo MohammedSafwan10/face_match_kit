@@ -26,7 +26,8 @@ retain captured images by default.
 - Lossless, orientation-normalized still-image preprocessing on both platforms
 - Startup integrity checks for every detector, landmark, and embedding asset
 - Strict model and preprocessing version checks
-- Android-to-iOS and iOS-to-Android template format
+- Versioned template format designed for Android/iOS portability (physical
+  cross-platform equivalence validation is still pending)
 - Ready-made enrollment and verification camera widgets
 - Low-level image APIs for custom interfaces
 - App-owned template persistence
@@ -121,8 +122,11 @@ The integrating application is responsible for consent, encryption, access
 control, retention, deletion, breach handling, and applicable biometric laws.
 Do not place templates in logs or analytics.
 
-The package never uploads templates or images. Camera widget temporary files are
-deleted after reading. See [SECURITY.md](SECURITY.md) and
+The package never uploads templates or images. Camera widgets attempt to delete
+temporary captures immediately after reading; deletion is best-effort because
+the operating system or camera plugin may already have moved or removed the
+file. Captured bytes can remain in managed memory until garbage collection and
+are not guaranteed to be zeroized. See [SECURITY.md](SECURITY.md) and
 [MIGRATION.md](MIGRATION.md).
 
 ## Accuracy

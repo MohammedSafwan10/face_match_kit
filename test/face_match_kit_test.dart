@@ -3,6 +3,7 @@ import 'dart:math';
 import 'package:face_match_kit/face_match_kit.dart';
 import 'package:face_match_kit/src/image_normalizer.dart';
 import 'package:face_match_kit/src/widgets/camera_helpers.dart';
+import 'package:camera/camera.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:image/image.dart' as image;
@@ -88,9 +89,33 @@ void main() {
         throwsFormatException,
       );
     });
+
+    test('rejects oversized serialized dimensions before copying lists', () {
+      expect(
+        () => FaceTemplate.fromJson({
+          'schemaVersion': FaceTemplate.currentSchemaVersion,
+          'modelId': FaceMatchKit.modelId,
+          'modelHash': FaceMatchKit.modelHash,
+          'pipelineVersion': FaceMatchKit.pipelineVersion,
+          'dimensions': FaceTemplate.maximumSerializedDimensions + 1,
+          'samples': const {},
+          'centroid': const [],
+          'createdAt': DateTime.now().toIso8601String(),
+        }),
+        throwsFormatException,
+      );
+    });
   });
 
   group('configuration', () {
+    test('uses value equality for safe widget reconfiguration', () {
+      expect(const FaceMatchConfig(), const FaceMatchConfig());
+      expect(
+        const FaceMatchConfig(livenessEnabled: false),
+        isNot(const FaceMatchConfig()),
+      );
+    });
+
     test('rejects invalid values in release-safe validation', () {
       expect(
         () =>
@@ -149,6 +174,17 @@ void main() {
   });
 
   group('camera rotation', () {
+    test('camera stream formats remain compatible with frame conversion', () {
+      expect(
+        cameraImageFormatForPlatform(TargetPlatform.android),
+        ImageFormatGroup.yuv420,
+      );
+      expect(
+        cameraImageFormatForPlatform(TargetPlatform.iOS),
+        ImageFormatGroup.bgra8888,
+      );
+    });
+
     test('Android includes sensor, lens, and device orientation', () {
       expect(
         rotationForCameraFrame(
@@ -187,6 +223,20 @@ void main() {
         FaceCameraRotation.none,
       );
     });
+
+    test('pose directions describe the selfie user, not image coordinates', () {
+      DetectedFace face(double yaw) => DetectedFace(
+        box: const FaceBox(left: 0, top: 0, right: 100, bottom: 100),
+        score: 1,
+        faceFraction: 0.5,
+        yaw: yaw,
+      );
+
+      expect(poseIsReady(FacePose.slightLeft, face(20)), isTrue);
+      expect(poseIsReady(FacePose.slightLeft, face(-20)), isFalse);
+      expect(poseIsReady(FacePose.slightRight, face(-20)), isTrue);
+      expect(poseIsReady(FacePose.slightRight, face(20)), isFalse);
+    });
   });
 
   group('basic liveness', () {
@@ -206,12 +256,14 @@ void main() {
       session.update(value);
     }
 
-    test('blink requires stable open, closed, then open phases', () {
+    test('blink accepts one closed frame between stable open phases', () {
       final session = LivenessSession(
         LivenessChallenge([LivenessAction.blink]),
       );
       twice(session, face(eyes: 0.9));
-      twice(session, face(eyes: 0.1));
+      expect(session.currentPhase, LivenessPhase.action);
+      session.update(face(eyes: 0.1));
+      expect(session.currentPhase, LivenessPhase.returned);
       expect(session.isComplete, isFalse);
       twice(session, face(eyes: 0.9));
       expect(session.isComplete, isTrue);
@@ -224,7 +276,7 @@ void main() {
       twice(session, face(yaw: -20));
       expect(session.isComplete, isFalse);
       twice(session, face(yaw: 0));
-      twice(session, face(yaw: -20));
+      session.update(face(yaw: 20));
       expect(session.isComplete, isFalse);
       twice(session, face(yaw: 0));
       expect(session.isComplete, isTrue);

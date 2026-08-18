@@ -5,6 +5,9 @@ import 'face_match_models.dart';
 /// Basic challenge actions. These are not advanced anti-spoofing.
 enum LivenessAction { blink, turnLeft, turnRight }
 
+/// Current step within one liveness action.
+enum LivenessPhase { neutral, action, returned }
+
 class LivenessChallenge {
   final List<LivenessAction> actions;
 
@@ -51,8 +54,9 @@ class LivenessSession {
   final Duration actionTimeout;
   final DateTime Function() _now;
   int _index = 0;
-  _LivenessPhase _phase = _LivenessPhase.neutral;
+  LivenessPhase _phase = LivenessPhase.neutral;
   int _stableFrames = 0;
+  int _resetCount = 0;
   late DateTime _actionStartedAt;
 
   LivenessSession(
@@ -73,6 +77,11 @@ class LivenessSession {
   bool get isComplete => _index >= challenge.actions.length;
   LivenessAction? get currentAction =>
       isComplete ? null : challenge.actions[_index];
+  LivenessPhase get currentPhase => _phase;
+  int get completedActions => _index;
+  int get totalActions => challenge.actions.length;
+  int get stableFrames => _stableFrames;
+  int get resetCount => _resetCount;
 
   LivenessProgress update(DetectedFace face) {
     if (isComplete) return _progress();
@@ -80,14 +89,15 @@ class LivenessSession {
     final action = currentAction!;
     final condition = _conditionFor(action, face, _phase);
     _stableFrames = condition ? _stableFrames + 1 : 0;
-    if (_stableFrames >= 2) {
+    final requiredFrames = _phase == LivenessPhase.action ? 1 : 2;
+    if (_stableFrames >= requiredFrames) {
       _stableFrames = 0;
-      if (_phase == _LivenessPhase.returned) {
+      if (_phase == LivenessPhase.returned) {
         _index++;
-        _phase = _LivenessPhase.neutral;
+        _phase = LivenessPhase.neutral;
         _actionStartedAt = _now();
       } else {
-        _phase = _LivenessPhase.values[_phase.index + 1];
+        _phase = LivenessPhase.values[_phase.index + 1];
       }
     }
     return _progress();
@@ -96,15 +106,16 @@ class LivenessSession {
   /// Restarts the complete challenge after face loss or timeout.
   void reset() {
     _index = 0;
-    _phase = _LivenessPhase.neutral;
+    _phase = LivenessPhase.neutral;
     _stableFrames = 0;
+    _resetCount++;
     _actionStartedAt = _now();
   }
 
   bool _conditionFor(
     LivenessAction action,
     DetectedFace face,
-    _LivenessPhase phase,
+    LivenessPhase phase,
   ) {
     switch (action) {
       case LivenessAction.blink:
@@ -113,22 +124,24 @@ class LivenessSession {
         if (left == null || right == null) return false;
         final openness = (left + right) / 2;
         return switch (phase) {
-          _LivenessPhase.neutral || _LivenessPhase.returned => openness >= 0.62,
-          _LivenessPhase.action => openness <= 0.35,
+          LivenessPhase.neutral || LivenessPhase.returned => openness >= 0.55,
+          LivenessPhase.action => openness <= 0.45,
         };
       case LivenessAction.turnLeft:
         final yaw = face.yaw;
         if (yaw == null) return false;
         return switch (phase) {
-          _LivenessPhase.neutral || _LivenessPhase.returned => yaw.abs() <= 8,
-          _LivenessPhase.action => yaw <= -15,
+          LivenessPhase.neutral || LivenessPhase.returned => yaw.abs() <= 12,
+          // Detector yaw follows image coordinates. On a front-facing camera,
+          // the user's left turn points toward the right side of the image.
+          LivenessPhase.action => yaw >= 12,
         };
       case LivenessAction.turnRight:
         final yaw = face.yaw;
         if (yaw == null) return false;
         return switch (phase) {
-          _LivenessPhase.neutral || _LivenessPhase.returned => yaw.abs() <= 8,
-          _LivenessPhase.action => yaw >= 15,
+          LivenessPhase.neutral || LivenessPhase.returned => yaw.abs() <= 12,
+          LivenessPhase.action => yaw <= -12,
         };
     }
   }
@@ -139,5 +152,3 @@ class LivenessSession {
     currentAction: currentAction,
   );
 }
-
-enum _LivenessPhase { neutral, action, returned }
