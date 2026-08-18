@@ -14,6 +14,7 @@ import 'camera_helpers.dart';
 import 'face_capture_chrome.dart';
 import 'face_camera_frame.dart';
 import 'face_match_theme.dart';
+import 'liveness_guidance.dart';
 
 class FaceVerificationView extends StatefulWidget {
   final FaceTemplate template;
@@ -354,13 +355,12 @@ class _FaceVerificationViewState extends State<FaceVerificationView>
 
   String get _instruction {
     if (_result?.isMatch ?? false) return widget.texts.success;
-    if (!_livenessComplete) {
-      return widget.texts.livenessStep(
-        _liveness!.currentAction!,
-        _liveness!.currentPhase,
-      );
-    }
-    return widget.texts.lookStraight;
+    return livenessGuidanceOrFallback(
+      texts: widget.texts,
+      session: _liveness,
+      challengeComplete: _livenessComplete,
+      fallback: widget.texts.lookStraight,
+    );
   }
 
   String get _captureBlockReason {

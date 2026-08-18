@@ -3,6 +3,7 @@ import 'dart:math';
 import 'package:face_match_kit/face_match_kit.dart';
 import 'package:face_match_kit/src/image_normalizer.dart';
 import 'package:face_match_kit/src/widgets/camera_helpers.dart';
+import 'package:face_match_kit/src/widgets/liveness_guidance.dart';
 import 'package:camera/camera.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -300,6 +301,29 @@ void main() {
       expect(
         () => LivenessChallenge([LivenessAction.blink, LivenessAction.blink]),
         throwsArgumentError,
+      );
+    });
+
+    test('completed session has safe fallback during timeout boundary', () {
+      final session = LivenessSession(
+        LivenessChallenge([LivenessAction.blink]),
+      );
+      twice(session, face(eyes: 0.9));
+      session.update(face(eyes: 0.1));
+      twice(session, face(eyes: 0.9));
+      expect(session.isComplete, isTrue);
+      expect(session.currentAction, isNull);
+
+      expect(
+        livenessGuidanceOrFallback(
+          texts: const FaceMatchTexts(),
+          session: session,
+          // The widget can consider a finished challenge expired before the
+          // next camera frame resets its session.
+          challengeComplete: false,
+          fallback: 'Look straight at the camera',
+        ),
+        'Look straight at the camera',
       );
     });
   });
