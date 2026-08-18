@@ -24,7 +24,7 @@ class FaceFriendlyHeader extends StatelessWidget {
       Text(
         title,
         textAlign: TextAlign.center,
-        maxLines: 1,
+        maxLines: 2,
         overflow: TextOverflow.ellipsis,
         style: TextStyle(
           color: theme.foregroundColor,
@@ -76,34 +76,43 @@ class FaceCameraPill extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => Center(
-    child: Container(
+    child: ConstrainedBox(
       constraints: const BoxConstraints(maxWidth: 280),
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-      decoration: BoxDecoration(
-        color: const Color(0xDD202124),
-        borderRadius: BorderRadius.circular(999),
-        border: Border.all(color: Colors.white.withValues(alpha: 0.12)),
-        boxShadow: const [BoxShadow(color: Color(0x30000000), blurRadius: 12)],
-      ),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          Icon(icon, color: accentColor, size: 21),
-          const SizedBox(width: 9),
-          Flexible(
-            child: Text(
-              label,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: const TextStyle(
-                color: Colors.white,
-                fontSize: 14,
-                fontWeight: FontWeight.w600,
+      child: DecoratedBox(
+        decoration: BoxDecoration(
+          color: const Color(0xDD202124),
+          borderRadius: BorderRadius.circular(24),
+          border: Border.all(color: Colors.white.withValues(alpha: 0.12)),
+          boxShadow: const [
+            BoxShadow(color: Color(0x30000000), blurRadius: 12),
+          ],
+        ),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+          child: Row(
+            mainAxisSize: MainAxisSize.max,
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Icon(icon, color: accentColor, size: 21),
+              const SizedBox(width: 9),
+              Flexible(
+                child: Text(
+                  label,
+                  textAlign: TextAlign.center,
+                  maxLines: 2,
+                  softWrap: true,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontSize: 14,
+                    height: 1.2,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
               ),
-            ),
+            ],
           ),
-        ],
+        ),
       ),
     ),
   );
@@ -118,7 +127,8 @@ class FaceCameraTitle extends StatelessWidget {
   Widget build(BuildContext context) => Text(
     label,
     textAlign: TextAlign.center,
-    maxLines: 1,
+    maxLines: 2,
+    softWrap: true,
     overflow: TextOverflow.ellipsis,
     style: const TextStyle(
       color: Colors.white,
