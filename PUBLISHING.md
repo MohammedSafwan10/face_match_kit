@@ -5,6 +5,10 @@ Do not run `dart pub publish` until every release gate below is complete.
 - [ ] Confirm the embedding model's original weight owner, checkpoint source,
       training-data terms, conversion process, and redistribution licence in
       writing, or replace it with fully documented redistributable weights.
+- [x] Record the exact upstream commit that introduced the embedding model and
+      provide a reproducible written provenance request under `doc/legal/`.
+- [x] Inventory all twelve model assets redistributed by the transitive face
+      dependency, including byte sizes and SHA-256 values.
 - [x] Record and verify all five pipeline asset SHA-256 values at package
       initialization and bind them to the pipeline identifier.
 - [ ] Pass formatting, analysis, unit tests, Android example build, and
@@ -19,6 +23,8 @@ Do not run `dart pub publish` until every release gate below is complete.
       and publish FAR/FRR by platform direction and supported conditions.
 - [ ] Review privacy, biometric consent, deletion, retention, and incident
       obligations for intended launch regions.
+- [x] Document package-level data processing and the host application's privacy
+      and biometric-governance responsibilities in `PRIVACY.md`.
 - [ ] Replace or validate upstream eye-only alignment against a documented
       canonical eyes-and-nose alignment implementation.
 - [ ] Measure and reduce the release binary/native-model footprint.

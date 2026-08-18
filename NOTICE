@@ -4,6 +4,10 @@ Copyright 2026 MohammedSafwan10 and face_match_kit contributors
 This product depends on face_detection_tflite, licensed under Apache-2.0, and
 uses a MobileFaceNet-derived embedding model distributed by that dependency.
 
+The complete runtime dependency and transitive model-asset inventory is in
+THIRD_PARTY_NOTICES.md. The embedding model's commercial redistribution
+provenance is not yet established; MODEL_CARD.md is a mandatory release gate.
+
 MobileFaceNets: Efficient CNNs for Accurate Real-Time Face Verification on
 Mobile Devices, Sheng Chen, Yang Liu, Xiang Gao, and Zhen Han (2018),
 https://arxiv.org/abs/1804.07573

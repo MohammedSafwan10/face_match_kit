@@ -126,8 +126,8 @@ The package never uploads templates or images. Camera widgets attempt to delete
 temporary captures immediately after reading; deletion is best-effort because
 the operating system or camera plugin may already have moved or removed the
 file. Captured bytes can remain in managed memory until garbage collection and
-are not guaranteed to be zeroized. See [SECURITY.md](SECURITY.md) and
-[MIGRATION.md](MIGRATION.md).
+are not guaranteed to be zeroized. See [PRIVACY.md](PRIVACY.md),
+[SECURITY.md](SECURITY.md), and [MIGRATION.md](MIGRATION.md).
 
 ## Accuracy
 
@@ -156,6 +156,13 @@ the template only in memory and demonstrates explicit deletion.
 The package source is available under the [Apache License 2.0](LICENSE). You may
 use, modify, and distribute it, including commercially, while preserving the
 licence and required notices. Apache-2.0 also includes an explicit patent grant.
+
+That source-code licence is not a representation that every independently
+trained model checkpoint has been cleared. Commercial publication remains
+blocked by the embedding-weight provenance described in
+[MODEL_CARD.md](MODEL_CARD.md). See
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for the resolved software and
+model inventory.
 
 The licence does not grant permission to present an unofficial fork as an
 official Face Match Kit release or to imply endorsement. See

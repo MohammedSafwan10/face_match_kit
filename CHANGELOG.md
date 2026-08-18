@@ -24,3 +24,6 @@
   and configuration changes.
 - Bounded serialized template dimensions and sanitized public processing
   failures so native exception details are not exposed.
+- Added a complete third-party/model asset inventory, SDK privacy guidance, and
+  a reproducible embedding-model provenance request while keeping publication
+  blocked until commercial redistribution rights are evidenced.
