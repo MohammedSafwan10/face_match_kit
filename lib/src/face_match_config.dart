@@ -1,6 +1,6 @@
 /// Configuration for detection, enrollment, and verification.
 class FaceMatchConfig {
-  /// Provisional default from the bundled embedding model.
+  /// Provisional OpenCV SFace cosine threshold.
   ///
   /// Production applications should calibrate this against their own capture
   /// conditions and false-accept/false-reject requirements.
@@ -46,8 +46,8 @@ class FaceMatchConfig {
   final Duration liveDetectionInterval;
 
   const FaceMatchConfig({
-    this.verificationThreshold = 0.60,
-    this.enrollmentConsistencyThreshold = 0.45,
+    this.verificationThreshold = 0.363,
+    this.enrollmentConsistencyThreshold = 0.30,
     this.minimumFaceFraction = 0.18,
     this.minimumDetectionScore = 0.65,
     this.maximumPitch = 30,
@@ -59,7 +59,27 @@ class FaceMatchConfig {
     this.livenessCompletionTimeout = const Duration(seconds: 3),
     this.livenessFaceLossTolerance = 3,
     this.liveDetectionInterval = const Duration(milliseconds: 120),
+    this.liveDetectionTimeout = const Duration(seconds: 3),
+    this.stillProcessingTimeout = const Duration(seconds: 15),
+    this.maximumInputBytes = 20 * 1024 * 1024,
+    this.maximumImagePixels = 20 * 1000 * 1000,
+    this.canonicalMaxDimension = 1600,
   });
+
+  /// Maximum time allowed for processing one live frame.
+  final Duration liveDetectionTimeout;
+
+  /// Maximum time allowed for one encoded still-image operation.
+  final Duration stillProcessingTimeout;
+
+  /// Maximum accepted encoded image size.
+  final int maximumInputBytes;
+
+  /// Maximum accepted decoded image area.
+  final int maximumImagePixels;
+
+  /// Deterministic longest-side cap used by the canonical still pipeline.
+  final int canonicalMaxDimension;
 
   /// Validates configuration in debug and release builds.
   void validate() {
@@ -116,6 +136,20 @@ class FaceMatchConfig {
         'Must not be negative.',
       );
     }
+    if (liveDetectionTimeout <= Duration.zero ||
+        stillProcessingTimeout <= Duration.zero) {
+      throw ArgumentError('Face processing timeouts must be positive.');
+    }
+    if (maximumInputBytes < 1024 || maximumImagePixels < 10000) {
+      throw ArgumentError('Face image limits are too small.');
+    }
+    if (canonicalMaxDimension < 112 || canonicalMaxDimension > 4096) {
+      throw ArgumentError.value(
+        canonicalMaxDimension,
+        'canonicalMaxDimension',
+        'Must be between 112 and 4096.',
+      );
+    }
   }
 
   static void _requireUnitInterval(double value, String name) {
@@ -155,7 +189,12 @@ class FaceMatchConfig {
           livenessActionTimeout == other.livenessActionTimeout &&
           livenessCompletionTimeout == other.livenessCompletionTimeout &&
           livenessFaceLossTolerance == other.livenessFaceLossTolerance &&
-          liveDetectionInterval == other.liveDetectionInterval;
+          liveDetectionInterval == other.liveDetectionInterval &&
+          liveDetectionTimeout == other.liveDetectionTimeout &&
+          stillProcessingTimeout == other.stillProcessingTimeout &&
+          maximumInputBytes == other.maximumInputBytes &&
+          maximumImagePixels == other.maximumImagePixels &&
+          canonicalMaxDimension == other.canonicalMaxDimension;
 
   @override
   int get hashCode => Object.hash(
@@ -172,5 +211,10 @@ class FaceMatchConfig {
     livenessCompletionTimeout,
     livenessFaceLossTolerance,
     liveDetectionInterval,
+    liveDetectionTimeout,
+    stillProcessingTimeout,
+    maximumInputBytes,
+    maximumImagePixels,
+    canonicalMaxDimension,
   );
 }

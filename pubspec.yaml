@@ -4,6 +4,19 @@ version: 0.1.0
 homepage: https://github.com/MohammedSafwan10/face_match_kit
 repository: https://github.com/MohammedSafwan10/face_match_kit
 issue_tracker: https://github.com/MohammedSafwan10/face_match_kit/issues
+
+platforms:
+  android:
+  ios:
+
+hooks:
+  user_defines:
+    dartcv4:
+      include_modules:
+        - imgproc
+        - dnn
+        - objdetect
+        - calib3d
 topics:
   - face-detection
   - face-verification
@@ -18,11 +31,11 @@ environment:
 dependencies:
   camera: ^0.12.0
   crypto: ^3.0.7
-  face_detection_tflite: ">=6.6.3 <6.6.4"
   flutter:
     sdk: flutter
-  flutter_litert: ">=3.5.1 <3.5.2"
-  image: ">=4.3.0 <4.5.2"
+  flutter_litert: 3.5.1
+  image: 4.3.0
+  opencv_dart: 2.2.2
 
 dev_dependencies:
   flutter_lints: ^6.0.0
@@ -31,6 +44,11 @@ dev_dependencies:
 
 flutter:
   uses-material-design: true
+  assets:
+    - assets/models/face_detection_yunet_2023mar.onnx
+    - assets/models/face_recognition_sface_2021dec_int8.onnx
+    - assets/models/face_landmarks_detector.tflite
+    - assets/models/face_blendshapes.tflite
 
 screenshots:
   - description: Face Match Kit on-device enrollment and verification hero.

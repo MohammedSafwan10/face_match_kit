@@ -57,6 +57,7 @@ class LivenessSession {
   LivenessPhase _phase = LivenessPhase.neutral;
   int _stableFrames = 0;
   int _resetCount = 0;
+  FaceBox? _previousBox;
   late DateTime _actionStartedAt;
 
   LivenessSession(
@@ -86,10 +87,14 @@ class LivenessSession {
   LivenessProgress update(DetectedFace face) {
     if (isComplete) return _progress();
     if (_now().difference(_actionStartedAt) > actionTimeout) reset();
+    if (!_isContinuous(face.box)) {
+      reset();
+    }
+    _previousBox = face.box;
     final action = currentAction!;
     final condition = _conditionFor(action, face, _phase);
     _stableFrames = condition ? _stableFrames + 1 : 0;
-    final requiredFrames = _phase == LivenessPhase.action ? 1 : 2;
+    const requiredFrames = 2;
     if (_stableFrames >= requiredFrames) {
       _stableFrames = 0;
       if (_phase == LivenessPhase.returned) {
@@ -108,8 +113,25 @@ class LivenessSession {
     _index = 0;
     _phase = LivenessPhase.neutral;
     _stableFrames = 0;
+    _previousBox = null;
     _resetCount++;
     _actionStartedAt = _now();
+  }
+
+  bool _isContinuous(FaceBox current) {
+    final previous = _previousBox;
+    if (previous == null) return true;
+    final width = max(1.0, previous.width);
+    final previousCenterX = (previous.left + previous.right) / 2;
+    final previousCenterY = (previous.top + previous.bottom) / 2;
+    final currentCenterX = (current.left + current.right) / 2;
+    final currentCenterY = (current.top + current.bottom) / 2;
+    final movement = sqrt(
+      pow(currentCenterX - previousCenterX, 2) +
+          pow(currentCenterY - previousCenterY, 2),
+    );
+    final sizeRatio = current.width / width;
+    return movement <= width * 0.65 && sizeRatio >= 0.55 && sizeRatio <= 1.8;
   }
 
   bool _conditionFor(

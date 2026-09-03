@@ -1,7 +1,7 @@
 import 'dart:math';
 
 import 'package:face_match_kit/face_match_kit.dart';
-import 'package:face_match_kit/src/image_normalizer.dart';
+import 'package:face_match_kit/src/engine/image_preprocessor.dart';
 import 'package:face_match_kit/src/widgets/camera_helpers.dart';
 import 'package:face_match_kit/src/widgets/liveness_guidance.dart';
 import 'package:camera/camera.dart';
@@ -23,6 +23,7 @@ void main() {
       for (final pose in FacePose.values) pose: unitEmbedding(pose.index + 1),
     };
     return FaceTemplate(
+      templateId: '00112233445566778899aabbccddeeff',
       modelId: FaceMatchKit.modelId,
       modelHash: FaceMatchKit.modelHash,
       pipelineVersion: FaceMatchKit.pipelineVersion,
@@ -164,14 +165,23 @@ void main() {
         source.setPixelRgb(x, y, x < 10 ? 255 : 0, 0, x < 10 ? 0 : 255);
       }
     }
-    final canonical = await canonicalizeImage(
-      image.encodePng(source),
+    final canonical = canonicalStillImage(
+      Uint8List.fromList(image.encodePng(source)),
       mirrored: true,
+      maximumInputBytes: 1024 * 1024,
+      maximumImagePixels: 10000,
+      maximumDimension: 1600,
     );
-    final decoded = image.decodePng(canonical)!;
+    expect(canonical.getPixel(2, 5).b, 255);
+    expect(canonical.getPixel(17, 5).r, 255);
+  });
 
-    expect(decoded.getPixel(2, 5).b, 255);
-    expect(decoded.getPixel(17, 5).r, 255);
+  test('canonical resize and RGB to BGR conversion are deterministic', () {
+    final source = image.Image(width: 4, height: 2)
+      ..setPixelRgb(0, 0, 10, 20, 30);
+    final resized = resizeImage(source, 2);
+    expect((resized.width, resized.height), (2, 1));
+    expect(bgrBytes(source).sublist(0, 3), [30, 20, 10]);
   });
 
   group('camera rotation', () {
@@ -257,13 +267,13 @@ void main() {
       session.update(value);
     }
 
-    test('blink accepts one closed frame between stable open phases', () {
+    test('blink requires stable open, closed, and returned phases', () {
       final session = LivenessSession(
         LivenessChallenge([LivenessAction.blink]),
       );
       twice(session, face(eyes: 0.9));
       expect(session.currentPhase, LivenessPhase.action);
-      session.update(face(eyes: 0.1));
+      twice(session, face(eyes: 0.1));
       expect(session.currentPhase, LivenessPhase.returned);
       expect(session.isComplete, isFalse);
       twice(session, face(eyes: 0.9));
@@ -277,7 +287,7 @@ void main() {
       twice(session, face(yaw: -20));
       expect(session.isComplete, isFalse);
       twice(session, face(yaw: 0));
-      session.update(face(yaw: 20));
+      twice(session, face(yaw: 20));
       expect(session.isComplete, isFalse);
       twice(session, face(yaw: 0));
       expect(session.isComplete, isTrue);
@@ -292,7 +302,7 @@ void main() {
       );
       session.update(face(eyes: 0.9));
       now = now.add(const Duration(seconds: 3));
-      session.update(face(eyes: 0.1));
+      twice(session, face(eyes: 0.1));
       twice(session, face(eyes: 0.9));
       expect(session.isComplete, isFalse);
     });
@@ -309,7 +319,7 @@ void main() {
         LivenessChallenge([LivenessAction.blink]),
       );
       twice(session, face(eyes: 0.9));
-      session.update(face(eyes: 0.1));
+      twice(session, face(eyes: 0.1));
       twice(session, face(eyes: 0.9));
       expect(session.isComplete, isTrue);
       expect(session.currentAction, isNull);

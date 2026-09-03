@@ -7,6 +7,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../face_match_config.dart';
+import '../face_camera_input.dart';
 import '../face_match_kit_base.dart';
 import '../face_match_models.dart';
 import '../liveness.dart';
@@ -204,17 +205,21 @@ class _FaceEnrollmentViewState extends State<FaceEnrollmentView>
     }
     _processingFrame = true;
     try {
-      final result = await _kit!.detectCameraImage(
-        image,
-        rotation: rotationForCameraFrame(
-          width: image.width,
-          height: image.height,
-          sensorOrientation: description.sensorOrientation,
-          isFrontCamera: description.lensDirection == CameraLensDirection.front,
-          deviceOrientation: camera.value.deviceOrientation,
-        ),
-        isBgra: Platform.isIOS,
+      final rotation = rotationForCameraFrame(
+        width: image.width,
+        height: image.height,
+        sensorOrientation: description.sensorOrientation,
+        isFrontCamera: description.lensDirection == CameraLensDirection.front,
+        deviceOrientation: camera.value.deviceOrientation,
       );
+      final result = await _kit!.detectCameraFrame(
+        FaceCameraFrame.fromCameraImage(
+          image,
+          rotation: rotation,
+          mirrored: false,
+        ),
+      );
+      if (result.failure?.code == FaceMatchErrorCode.frameDropped) return;
       if (!mounted ||
           generation != _initializationGeneration ||
           !identical(camera, _camera)) {
@@ -244,7 +249,7 @@ class _FaceEnrollmentViewState extends State<FaceEnrollmentView>
         _failure = quality != null && !quality.isAcceptable
             ? FaceMatchFailure(
                 FaceMatchErrorCode.lowQuality,
-                quality.issues.first,
+                widget.texts.quality(quality.issues.first),
               )
             : result.failure?.code == FaceMatchErrorCode.noFace
             ? null
@@ -254,6 +259,14 @@ class _FaceEnrollmentViewState extends State<FaceEnrollmentView>
         _autoCaptureScheduled = true;
         unawaited(Future<void>.delayed(Duration.zero, _capture));
       }
+    } catch (_) {
+      setStateIfMounted(() {
+        _face = null;
+        _failure = const FaceMatchFailure(
+          FaceMatchErrorCode.processingFailure,
+          'This camera frame format is not supported.',
+        );
+      });
     } finally {
       await Future<void>.delayed(_effectiveConfig.liveDetectionInterval);
       _processingFrame = false;
@@ -327,7 +340,9 @@ class _FaceEnrollmentViewState extends State<FaceEnrollmentView>
     if (!poseIsReady(_pose, face)) return 'pose ${_pose.name} not ready';
     final quality = _kit?.evaluateQuality(face);
     if (quality == null) return 'engine not ready';
-    if (!quality.isAcceptable) return quality.issues.first;
+    if (!quality.isAcceptable) {
+      return widget.texts.quality(quality.issues.first);
+    }
     return 'READY';
   }
 
@@ -385,7 +400,7 @@ class _FaceEnrollmentViewState extends State<FaceEnrollmentView>
                           child: ConstrainedBox(
                             constraints: const BoxConstraints(maxWidth: 520),
                             child: SizedBox.expand(
-                              child: FaceCameraFrame(
+                              child: FaceCameraPreviewFrame(
                                 controller: camera,
                                 face: _face,
                                 isReady: _captureReady,

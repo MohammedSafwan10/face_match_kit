@@ -1,157 +1,167 @@
 import 'dart:async';
+import 'dart:io';
+import 'dart:math' as math;
 
 import 'package:crypto/crypto.dart';
-import 'package:face_detection_tflite/face_detection_tflite.dart' as fd;
 import 'package:flutter/services.dart';
-import 'package:flutter_litert/flutter_litert.dart' as litert;
 
+import 'engine/face_engine.dart';
+import 'face_camera_input.dart';
 import 'face_match_config.dart';
 import 'face_match_models.dart';
-import 'image_normalizer.dart';
-
-/// Rotation applied to a live camera buffer before detection.
-enum FaceCameraRotation { none, clockwise90, clockwise180, clockwise270 }
+import 'face_pipeline_identity.dart';
 
 /// On-device face detector, enrollment engine, and 1:1 verifier.
 class FaceMatchKit {
-  static const String modelId = 'mobilefacenet-192';
-  static const String modelHash =
-      'be4bc7cfc53f7bc336d0f28b1ab92535f618c913a422b683210750f6b5354854';
-  static const String pipelineAssetSetHash =
-      '78e54734adb404c24df8899c7ba8bcddffc79a44c25d782125da37d615d7fd62';
-  static const String pipelineVersion =
-      'canonical-png-eye-align-v2+detector-${fd.FaceDetector.modelVersion}'
-      '+assets-$pipelineAssetSetHash';
-  static const int embeddingDimensions = 192;
+  static const String modelId = FacePipelineIdentity.modelId;
+  static const String modelHash = FacePipelineIdentity.modelHash;
+  static const String pipelineVersion = FacePipelineIdentity.pipelineVersion;
+  static const int embeddingDimensions = FacePipelineIdentity.dimensions;
 
-  static const Map<String, String> _modelAssetHashes = {
-    'face_detection_front.tflite':
-        '3bc182eb9f33925d9e58b5c8d59308a760f4adea8f282370e428c51212c26633',
-    'face_landmark.tflite':
-        '2efcb4f4de43c7614b80a3cc3e8a37354b3b3b40f75cce20f6f38f0f25d65493',
-    'iris_landmark.tflite':
-        'd1744d2a09c25f501d39eba4faff47e53ecca8852c5ce19bce8eeac39357521f',
+  static const Map<String, String> _assetHashes = {
+    'face_detection_yunet_2023mar.onnx':
+        '8f2383e4dd3cfbb4553ea8718107fc0423210dc964f9f4280604804ed2552fa4',
+    'face_recognition_sface_2021dec_int8.onnx': modelHash,
+    'face_landmarks_detector.tflite':
+        'c7d54204ce0448474c7f3fa9af494787c0965cbdd6f20fc72867e43046bd43d5',
     'face_blendshapes.tflite':
         '4f36dded049db18d76048567439b2a7f58f1daabc00d78bfe8f3ad396a2d2082',
-    'mobilefacenet.tflite': modelHash,
   };
 
   final FaceMatchConfig config;
-  final fd.FaceDetector _detector;
+  final FaceEngine _engine;
+  final String _temporarySfacePath;
   bool _disposed = false;
   int _activeOperations = 0;
   Completer<void>? _idleCompleter;
-  Future<void> _operationTail = Future<void>.value();
 
-  FaceMatchKit._(this.config, this._detector);
+  FaceMatchKit._(this.config, this._engine, this._temporarySfacePath);
 
+  /// Loads and verifies all bundled models and starts the native worker.
   static Future<FaceMatchKit> create({
     FaceMatchConfig config = const FaceMatchConfig(),
   }) async {
     config.validate();
-    for (final entry in _modelAssetHashes.entries) {
+    final assets = <String, Uint8List>{};
+    for (final entry in _assetHashes.entries) {
       final data = await rootBundle.load(
-        'packages/face_detection_tflite/assets/models/${entry.key}',
+        'packages/face_match_kit/assets/models/${entry.key}',
       );
-      final bytes = data.buffer.asUint8List(
-        data.offsetInBytes,
-        data.lengthInBytes,
+      final bytes = Uint8List.fromList(
+        data.buffer.asUint8List(data.offsetInBytes, data.lengthInBytes),
       );
-      final actualHash = sha256.convert(bytes).toString();
-      if (actualHash != entry.value) {
-        throw StateError(
-          'Face pipeline integrity check failed for ${entry.key}. Expected '
-          '${entry.value} but loaded $actualHash. Upgrade face_match_kit or '
-          'restore a compatible face_detection_tflite dependency.',
-        );
+      final actual = sha256.convert(bytes).toString();
+      if (actual != entry.value) {
+        throw StateError('Face model integrity check failed for ${entry.key}.');
       }
+      assets[entry.key] = bytes;
     }
 
-    final detector = await fd.FaceDetector.create(
-      model: fd.FaceDetectionModel.frontCamera,
-      // Keep raw detections visible to the guidance UI. Quality thresholds
-      // are applied by evaluateQuality(), where the host can explain how to
-      // improve instead of turning a small/dim face into an ambiguous
-      // "no face" result before landmarks are returned.
-      minScore: 0,
-      minFaceSize: 0,
+    final random = math.Random.secure();
+    final suffix = List<int>.generate(
+      16,
+      (_) => random.nextInt(256),
+    ).map((value) => value.toRadixString(16).padLeft(2, '0')).join();
+    final sfaceFile = File(
+      '${Directory.systemTemp.path}${Platform.pathSeparator}'
+      'face_match_kit_sface_$suffix.onnx',
     );
-    return FaceMatchKit._(config, detector);
+    try {
+      await sfaceFile.writeAsBytes(
+        assets['face_recognition_sface_2021dec_int8.onnx']!,
+        flush: true,
+      );
+      final engine = await FaceEngine.create(
+        yunet: assets['face_detection_yunet_2023mar.onnx']!,
+        landmarks: assets['face_landmarks_detector.tflite']!,
+        blendshapes: assets['face_blendshapes.tflite']!,
+        sfacePath: sfaceFile.path,
+        maximumInputBytes: config.maximumInputBytes,
+        maximumImagePixels: config.maximumImagePixels,
+        canonicalMaxDimension: config.canonicalMaxDimension,
+      );
+      return FaceMatchKit._(config, engine, sfaceFile.path);
+    } catch (_) {
+      await _deleteTemporaryFile(sfaceFile.path);
+      rethrow;
+    }
   }
 
-  /// Detects faces in encoded JPEG/PNG bytes after canonical normalization.
+  /// Detects faces in encoded JPEG/PNG bytes using the canonical pipeline.
   Future<FaceDetectionResult> detect(
     Uint8List imageBytes, {
     bool mirrored = false,
-  }) => _runOperation(() => _detect(imageBytes, mirrored: mirrored));
-
-  Future<FaceDetectionResult> _detect(
-    Uint8List imageBytes, {
-    required bool mirrored,
-  }) async {
+  }) => _runStill(() async {
     try {
-      final canonical = await canonicalizeImage(imageBytes, mirrored: mirrored);
-      final faces = await _detector.detectFacesFromBytes(
-        canonical,
-        mode: fd.FaceDetectionMode.full,
+      final result = await _engine
+          .analyzeStill(imageBytes, mirrored: mirrored, embedding: false)
+          .timeout(config.stillProcessingTimeout);
+      return _publicDetection(result);
+    } on TimeoutException {
+      return const FaceDetectionResult(
+        failure: FaceMatchFailure(
+          FaceMatchErrorCode.operationTimeout,
+          'Face detection timed out.',
+        ),
       );
-      return _publicDetection(faces);
-    } on FormatException catch (error) {
-      return FaceDetectionResult(
+    } on FormatException {
+      return const FaceDetectionResult(
         failure: FaceMatchFailure(
           FaceMatchErrorCode.invalidImage,
-          error.message,
+          'The image is malformed or exceeds the configured limits.',
         ),
       );
     } catch (_) {
-      return FaceDetectionResult(
+      return const FaceDetectionResult(
         failure: FaceMatchFailure(
           FaceMatchErrorCode.processingFailure,
           'Face detection could not be completed.',
         ),
       );
     }
-  }
+  });
 
-  /// Detects live camera pixels for guidance and liveness only.
+  /// Processes a package-owned camera frame for guidance and basic liveness.
   ///
-  /// Enrollment and verification embeddings always use encoded still images.
-  Future<FaceDetectionResult> detectCameraImage(
-    Object cameraImage, {
-    FaceCameraRotation rotation = FaceCameraRotation.none,
-    bool isBgra = false,
-  }) => _runOperation(
-    () => _detectCameraImage(cameraImage, rotation: rotation, isBgra: isBgra),
-  );
+  /// When live work is backed up, an older queued frame is dropped in favour
+  /// of the newest one. Enrollment and verification use encoded still images.
+  Future<FaceDetectionResult> detectCameraFrame(FaceCameraFrame frame) =>
+      _runLive(() async {
+        try {
+          final result = await _engine
+              .analyzeLive(frame)
+              .timeout(config.liveDetectionTimeout);
+          if (result == null) {
+            return const FaceDetectionResult(
+              failure: FaceMatchFailure(
+                FaceMatchErrorCode.frameDropped,
+                'A newer camera frame replaced this frame.',
+              ),
+            );
+          }
+          return _publicDetection(result);
+        } on TimeoutException {
+          return const FaceDetectionResult(
+            failure: FaceMatchFailure(
+              FaceMatchErrorCode.operationTimeout,
+              'Live face detection timed out.',
+            ),
+          );
+        } catch (_) {
+          return const FaceDetectionResult(
+            failure: FaceMatchFailure(
+              FaceMatchErrorCode.processingFailure,
+              'Live face detection could not be completed.',
+            ),
+          );
+        }
+      });
 
-  Future<FaceDetectionResult> _detectCameraImage(
-    Object cameraImage, {
-    required FaceCameraRotation rotation,
-    required bool isBgra,
-  }) async {
-    try {
-      final faces = await _detector.detectFacesFromCameraImage(
-        cameraImage,
-        mode: fd.FaceDetectionMode.full,
-        rotation: _cameraRotation(rotation),
-        isBgra: isBgra,
-        maxDim: 640,
-      );
-      return _publicDetection(faces);
-    } catch (_) {
-      return FaceDetectionResult(
-        failure: FaceMatchFailure(
-          FaceMatchErrorCode.processingFailure,
-          'Live face detection could not be completed.',
-        ),
-      );
-    }
-  }
-
+  /// Creates a schema-v2 template from front, slight-left, and slight-right.
   Future<EnrollmentResult> enroll({required List<FaceSample> samples}) =>
-      _runOperation(() => _enroll(samples: samples));
+      _runStill(() => _enroll(samples));
 
-  Future<EnrollmentResult> _enroll({required List<FaceSample> samples}) async {
+  Future<EnrollmentResult> _enroll(List<FaceSample> samples) async {
     final byPose = <FacePose, FaceSample>{
       for (final sample in samples) sample.pose: sample,
     };
@@ -167,54 +177,30 @@ class FaceMatchKit {
 
     final embeddings = <FacePose, List<double>>{};
     for (final pose in FacePose.values) {
+      final sample = byPose[pose]!;
       final analysis = await _analyzeStill(
-        byPose[pose]!.imageBytes,
-        mirrored: byPose[pose]!.mirrored,
+        sample.imageBytes,
+        mirrored: sample.mirrored,
         expectedPose: pose,
       );
       if (analysis.failure != null) {
         return EnrollmentResult.failure(analysis.failure!);
       }
-      try {
-        final embedding = await _detector.getFaceEmbedding(
-          analysis.face!,
-          analysis.canonicalBytes!,
-        );
-        if (embedding.length != embeddingDimensions) {
-          return EnrollmentResult.failure(
-            FaceMatchFailure(
-              FaceMatchErrorCode.processingFailure,
-              'Model returned ${embedding.length} dimensions; '
-              'expected $embeddingDimensions.',
-            ),
-          );
-        }
-        embeddings[pose] = embedding.toList(growable: false);
-      } catch (_) {
-        return EnrollmentResult.failure(
-          FaceMatchFailure(
-            FaceMatchErrorCode.processingFailure,
-            'Could not create the ${pose.name} embedding.',
-          ),
-        );
-      }
+      embeddings[pose] = analysis.embedding!;
     }
 
-    final enrollmentSimilarity = minimumPairwiseSimilarity(embeddings.values);
-    if (enrollmentSimilarity < config.enrollmentConsistencyThreshold) {
+    final consistency = minimumPairwiseSimilarity(embeddings.values);
+    if (consistency < config.enrollmentConsistencyThreshold) {
       return EnrollmentResult.failure(
         FaceMatchFailure(
           FaceMatchErrorCode.inconsistentEnrollment,
-          'Enrollment samples do not appear to show the same person '
-          '(${enrollmentSimilarity.toStringAsFixed(3)} < '
-          '${config.enrollmentConsistencyThreshold.toStringAsFixed(3)}). '
-          'Please restart enrollment.',
+          'The three enrollment samples are not consistent enough.',
         ),
       );
     }
-
     return EnrollmentResult.success(
       FaceTemplate(
+        templateId: _newTemplateId(),
         modelId: modelId,
         modelHash: modelHash,
         pipelineVersion: pipelineVersion,
@@ -226,6 +212,7 @@ class FaceMatchKit {
     );
   }
 
+  /// Verifies one probe image against one compatible template.
   Future<VerificationResult> verify({
     required Uint8List imageBytes,
     required FaceTemplate template,
@@ -236,40 +223,30 @@ class FaceMatchKit {
     if (!effectiveThreshold.isFinite ||
         effectiveThreshold < 0 ||
         effectiveThreshold > 1) {
-      throw ArgumentError.value(
-        effectiveThreshold,
-        'threshold',
-        'Must be finite and between 0 and 1.',
-      );
+      throw ArgumentError.value(effectiveThreshold, 'threshold');
     }
-    return _runOperation(
-      () => _verify(
-        imageBytes: imageBytes,
-        template: template,
-        mirrored: mirrored,
-        threshold: effectiveThreshold,
-      ),
+    return _runStill(
+      () => _verify(imageBytes, template, mirrored, effectiveThreshold),
     );
   }
 
-  Future<VerificationResult> _verify({
-    required Uint8List imageBytes,
-    required FaceTemplate template,
-    required bool mirrored,
-    required double threshold,
-  }) async {
-    final compatibilityFailure = _validateCompatibility(template);
-    if (compatibilityFailure != null) {
+  Future<VerificationResult> _verify(
+    Uint8List bytes,
+    FaceTemplate template,
+    bool mirrored,
+    double threshold,
+  ) async {
+    final compatibility = validateTemplate(template);
+    if (compatibility != null) {
       return VerificationResult(
         isMatch: false,
         similarity: 0,
         threshold: threshold,
-        failure: compatibilityFailure,
+        failure: compatibility,
       );
     }
-
     final analysis = await _analyzeStill(
-      imageBytes,
+      bytes,
       mirrored: mirrored,
       verification: true,
     );
@@ -281,73 +258,29 @@ class FaceMatchKit {
         failure: analysis.failure,
       );
     }
-
-    try {
-      final probe = await _detector.getFaceEmbedding(
-        analysis.face!,
-        analysis.canonicalBytes!,
-      );
-      final similarity = compareEmbeddings(probe, template.centroid);
-      final sampleScores = {
-        for (final entry in template.samples.entries)
-          entry.key: compareEmbeddings(probe, entry.value),
-      };
-      final isMatch = similarity >= threshold;
-      return VerificationResult(
-        isMatch: isMatch,
-        similarity: similarity,
-        threshold: threshold,
-        sampleSimilarities: sampleScores,
-        failure: isMatch
-            ? null
-            : const FaceMatchFailure(
-                FaceMatchErrorCode.belowThreshold,
-                'The captured face did not match the enrolled template.',
-              ),
-      );
-    } catch (_) {
-      return VerificationResult(
-        isMatch: false,
-        similarity: 0,
-        threshold: threshold,
-        failure: FaceMatchFailure(
-          FaceMatchErrorCode.processingFailure,
-          'Face verification could not be completed.',
-        ),
-      );
-    }
+    final probe = analysis.embedding!;
+    final similarity = compareEmbeddings(probe, template.centroid);
+    final sampleScores = {
+      for (final entry in template.samples.entries)
+        entry.key: compareEmbeddings(probe, entry.value),
+    };
+    final matched = similarity >= threshold;
+    return VerificationResult(
+      isMatch: matched,
+      similarity: similarity,
+      threshold: threshold,
+      sampleSimilarities: sampleScores,
+      failure: matched
+          ? null
+          : const FaceMatchFailure(
+              FaceMatchErrorCode.belowThreshold,
+              'The captured face did not match the enrolled template.',
+            ),
+    );
   }
 
-  double compareEmbeddings(List<double> a, List<double> b) =>
-      cosineSimilarity(a, b);
-
-  FaceQuality evaluateQuality(DetectedFace face, {bool verification = false}) {
-    final issues = <String>[];
-    if (face.score < config.minimumDetectionScore) {
-      issues.add('Move into better lighting.');
-    }
-    if (face.faceFraction < config.minimumFaceFraction) {
-      issues.add('Move closer to the camera.');
-    }
-    if (face.pitch == null || face.roll == null) {
-      issues.add('Hold still while facial landmarks are measured.');
-    }
-    if (face.pitch != null && face.pitch!.abs() > config.maximumPitch) {
-      issues.add('Keep your face level.');
-    }
-    if (face.roll != null && face.roll!.abs() > config.maximumRoll) {
-      issues.add('Straighten your head.');
-    }
-    if (verification && face.yaw == null) {
-      issues.add('Look straight at the camera.');
-    } else if (verification &&
-        face.yaw!.abs() > config.maximumVerificationYaw) {
-      issues.add('Look straight at the camera.');
-    }
-    return FaceQuality(isAcceptable: issues.isEmpty, issues: issues);
-  }
-
-  FaceMatchFailure? _validateCompatibility(FaceTemplate template) {
+  /// Returns a typed failure when a template belongs to another pipeline.
+  FaceMatchFailure? validateTemplate(FaceTemplate template) {
     if (template.schemaVersion != FaceTemplate.currentSchemaVersion ||
         template.modelId != modelId ||
         template.modelHash != modelHash ||
@@ -355,11 +288,37 @@ class FaceMatchKit {
         template.dimensions != embeddingDimensions) {
       return const FaceMatchFailure(
         FaceMatchErrorCode.incompatibleTemplate,
-        'This template was created by an incompatible model or pipeline. '
-        'Re-enrollment is required.',
+        'This template is incompatible. Re-enrollment is required.',
       );
     }
     return null;
+  }
+
+  double compareEmbeddings(List<double> a, List<double> b) =>
+      cosineSimilarity(a, b);
+
+  FaceQuality evaluateQuality(DetectedFace face, {bool verification = false}) {
+    final issues = <FaceQualityIssue>[];
+    if (face.score < config.minimumDetectionScore) {
+      issues.add(FaceQualityIssue.betterLighting);
+    }
+    if (face.faceFraction < config.minimumFaceFraction) {
+      issues.add(FaceQualityIssue.moveCloser);
+    }
+    if (face.pitch == null || face.roll == null) {
+      issues.add(FaceQualityIssue.landmarksUnavailable);
+    }
+    if (face.pitch != null && face.pitch!.abs() > config.maximumPitch) {
+      issues.add(FaceQualityIssue.keepLevel);
+    }
+    if (face.roll != null && face.roll!.abs() > config.maximumRoll) {
+      issues.add(FaceQualityIssue.straightenHead);
+    }
+    if (verification &&
+        (face.yaw == null || face.yaw!.abs() > config.maximumVerificationYaw)) {
+      issues.add(FaceQualityIssue.lookStraight);
+    }
+    return FaceQuality(isAcceptable: issues.isEmpty, issues: issues);
   }
 
   Future<_StillAnalysis> _analyzeStill(
@@ -369,33 +328,24 @@ class FaceMatchKit {
     bool verification = false,
   }) async {
     try {
-      final canonical = await canonicalizeImage(bytes, mirrored: mirrored);
-      final faces = await _detector.detectFacesFromBytes(
-        canonical,
-        mode: fd.FaceDetectionMode.full,
-      );
-      if (faces.isEmpty) {
-        return const _StillAnalysis.failure(
-          FaceMatchFailure(FaceMatchErrorCode.noFace, 'No face was detected.'),
-        );
+      final result = await _engine
+          .analyzeStill(bytes, mirrored: mirrored, embedding: true)
+          .timeout(config.stillProcessingTimeout);
+      final detection = _publicDetection(result);
+      if (detection.failure != null) {
+        return _StillAnalysis.failure(detection.failure!);
       }
-      if (faces.length != 1) {
-        return const _StillAnalysis.failure(
+      final face = detection.faces.single;
+      final quality = evaluateQuality(face, verification: verification);
+      if (!quality.isAcceptable) {
+        return _StillAnalysis.failure(
           FaceMatchFailure(
-            FaceMatchErrorCode.multipleFaces,
-            'Only one face may be visible.',
+            FaceMatchErrorCode.lowQuality,
+            faceQualityIssueMessage(quality.issues.first),
           ),
         );
       }
-
-      final publicFace = _toPublicFace(faces.single);
-      final quality = evaluateQuality(publicFace, verification: verification);
-      if (!quality.isAcceptable) {
-        return _StillAnalysis.failure(
-          FaceMatchFailure(FaceMatchErrorCode.lowQuality, quality.issues.first),
-        );
-      }
-      if (expectedPose != null && !_poseMatches(expectedPose, publicFace.yaw)) {
+      if (expectedPose != null && !_poseMatches(expectedPose, face.yaw)) {
         return _StillAnalysis.failure(
           FaceMatchFailure(
             FaceMatchErrorCode.wrongPose,
@@ -403,13 +353,34 @@ class FaceMatchKit {
           ),
         );
       }
-      return _StillAnalysis.success(canonical, faces.single);
-    } on FormatException catch (error) {
-      return _StillAnalysis.failure(
-        FaceMatchFailure(FaceMatchErrorCode.invalidImage, error.message),
+      final raw = result['embedding'];
+      if (raw is! List || raw.length != embeddingDimensions) {
+        return const _StillAnalysis.failure(
+          FaceMatchFailure(
+            FaceMatchErrorCode.processingFailure,
+            'The recognition model returned an invalid feature.',
+          ),
+        );
+      }
+      return _StillAnalysis.success(
+        raw.map((value) => (value as num).toDouble()).toList(growable: false),
+      );
+    } on TimeoutException {
+      return const _StillAnalysis.failure(
+        FaceMatchFailure(
+          FaceMatchErrorCode.operationTimeout,
+          'Still-image face processing timed out.',
+        ),
+      );
+    } on FormatException {
+      return const _StillAnalysis.failure(
+        FaceMatchFailure(
+          FaceMatchErrorCode.invalidImage,
+          'The image is malformed or exceeds the configured limits.',
+        ),
       );
     } catch (_) {
-      return _StillAnalysis.failure(
+      return const _StillAnalysis.failure(
         FaceMatchFailure(
           FaceMatchErrorCode.processingFailure,
           'Face processing could not be completed.',
@@ -418,9 +389,20 @@ class FaceMatchKit {
     }
   }
 
-  FaceDetectionResult _publicDetection(List<fd.Face> faces) {
-    final publicFaces = faces.map(_toPublicFace).toList(growable: false);
-    if (publicFaces.isEmpty) {
+  FaceDetectionResult _publicDetection(Map<String, Object?> result) {
+    final rawFaces = result['faces'];
+    if (rawFaces is! List) {
+      return const FaceDetectionResult(
+        failure: FaceMatchFailure(
+          FaceMatchErrorCode.processingFailure,
+          'The face detector returned malformed data.',
+        ),
+      );
+    }
+    final faces = rawFaces
+        .map((raw) => _toPublicFace(Map<String, Object?>.from(raw as Map)))
+        .toList(growable: false);
+    if (faces.isEmpty) {
       return const FaceDetectionResult(
         failure: FaceMatchFailure(
           FaceMatchErrorCode.noFace,
@@ -428,35 +410,39 @@ class FaceMatchKit {
         ),
       );
     }
-    if (publicFaces.length > 1) {
+    if (faces.length > 1) {
       return FaceDetectionResult(
-        faces: publicFaces,
+        faces: faces,
         failure: const FaceMatchFailure(
           FaceMatchErrorCode.multipleFaces,
           'Only one face may be visible.',
         ),
       );
     }
-    final quality = evaluateQuality(publicFaces.single);
-    return FaceDetectionResult(faces: publicFaces, quality: quality);
+    return FaceDetectionResult(
+      faces: faces,
+      quality: evaluateQuality(faces.single),
+    );
   }
 
-  DetectedFace _toPublicFace(fd.Face face) {
-    final box = face.boundingBox;
+  DetectedFace _toPublicFace(Map<String, Object?> raw) {
+    final box = (raw['box']! as List).cast<num>();
     return DetectedFace(
       box: FaceBox(
-        left: box.left,
-        top: box.top,
-        right: box.right,
-        bottom: box.bottom,
+        left: box[0].toDouble(),
+        top: box[1].toDouble(),
+        right: box[2].toDouble(),
+        bottom: box[3].toDouble(),
       ),
-      score: face.score,
-      faceFraction: face.widthFraction,
-      pitch: face.headEulerAngleX,
-      yaw: face.headEulerAngleY,
-      roll: face.headEulerAngleZ,
-      leftEyeOpenProbability: face.leftEyeOpenProbability,
-      rightEyeOpenProbability: face.rightEyeOpenProbability,
+      score: (raw['score']! as num).toDouble(),
+      faceFraction: (raw['faceFraction']! as num).toDouble(),
+      pitch: (raw['pitch'] as num?)?.toDouble(),
+      yaw: (raw['yaw'] as num?)?.toDouble(),
+      roll: (raw['roll'] as num?)?.toDouble(),
+      leftEyeOpenProbability: (raw['leftEyeOpenProbability'] as num?)
+          ?.toDouble(),
+      rightEyeOpenProbability: (raw['rightEyeOpenProbability'] as num?)
+          ?.toDouble(),
     );
   }
 
@@ -475,34 +461,20 @@ class FaceMatchKit {
     FacePose.slightRight => 'Turn your head slightly right.',
   };
 
-  litert.CameraFrameRotation? _cameraRotation(FaceCameraRotation rotation) =>
-      switch (rotation) {
-        FaceCameraRotation.none => null,
-        FaceCameraRotation.clockwise90 => litert.CameraFrameRotation.cw90,
-        FaceCameraRotation.clockwise180 => litert.CameraFrameRotation.cw180,
-        FaceCameraRotation.clockwise270 => litert.CameraFrameRotation.cw270,
-      };
-
-  Future<void> dispose() async {
-    if (_disposed) return;
-    _disposed = true;
-    if (_activeOperations > 0) {
-      _idleCompleter ??= Completer<void>();
-      await _idleCompleter!.future;
-    }
-    await _detector.dispose();
+  Future<T> _runStill<T>(Future<T> Function() operation) {
+    if (_disposed) throw StateError('FaceMatchKit has been disposed.');
+    return _track(operation);
   }
 
-  Future<T> _runOperation<T>(Future<T> Function() operation) async {
-    if (_disposed) {
-      throw StateError('FaceMatchKit has been disposed.');
-    }
+  Future<T> _runLive<T>(Future<T> Function() operation) {
+    if (_disposed) throw StateError('FaceMatchKit has been disposed.');
+    return _track(operation);
+  }
+
+  Future<T> _track<T>(Future<T> Function() operation) async {
     _activeOperations++;
-    final previous = _operationTail;
-    final result = previous.then((_) => operation());
-    _operationTail = result.then<void>((_) {}, onError: (_, _) {});
     try {
-      return await result;
+      return await operation();
     } finally {
       _activeOperations--;
       if (_activeOperations == 0 && _idleCompleter != null) {
@@ -511,15 +483,43 @@ class FaceMatchKit {
       }
     }
   }
+
+  Future<void> dispose() async {
+    if (_disposed) return;
+    _disposed = true;
+    if (_activeOperations > 0) {
+      _idleCompleter ??= Completer<void>();
+      await _idleCompleter!.future.timeout(
+        const Duration(seconds: 20),
+        onTimeout: () {},
+      );
+    }
+    await _engine.dispose();
+    await _deleteTemporaryFile(_temporarySfacePath);
+  }
 }
 
 class _StillAnalysis {
-  final Uint8List? canonicalBytes;
-  final fd.Face? face;
+  final List<double>? embedding;
   final FaceMatchFailure? failure;
 
-  const _StillAnalysis.success(this.canonicalBytes, this.face) : failure = null;
-  const _StillAnalysis.failure(this.failure)
-    : canonicalBytes = null,
-      face = null;
+  const _StillAnalysis.success(this.embedding) : failure = null;
+  const _StillAnalysis.failure(this.failure) : embedding = null;
+}
+
+String _newTemplateId() {
+  final random = math.Random.secure();
+  return List<int>.generate(
+    16,
+    (_) => random.nextInt(256),
+  ).map((value) => value.toRadixString(16).padLeft(2, '0')).join();
+}
+
+Future<void> _deleteTemporaryFile(String path) async {
+  try {
+    final file = File(path);
+    if (await file.exists()) await file.delete();
+  } catch (_) {
+    // Temporary model cleanup is best effort; no biometric image is stored.
+  }
 }

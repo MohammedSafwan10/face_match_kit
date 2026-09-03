@@ -2,6 +2,7 @@
 library;
 
 export 'src/face_match_config.dart';
+export 'src/face_camera_input.dart';
 export 'src/face_match_kit_base.dart';
 export 'src/face_match_models.dart';
 export 'src/liveness.dart';

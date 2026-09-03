@@ -7,6 +7,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../face_match_config.dart';
+import '../face_camera_input.dart';
 import '../face_match_kit_base.dart';
 import '../face_match_models.dart';
 import '../liveness.dart';
@@ -229,17 +230,21 @@ class _FaceVerificationViewState extends State<FaceVerificationView>
     }
     _processingFrame = true;
     try {
-      final detection = await _kit!.detectCameraImage(
-        image,
-        rotation: rotationForCameraFrame(
-          width: image.width,
-          height: image.height,
-          sensorOrientation: description.sensorOrientation,
-          isFrontCamera: description.lensDirection == CameraLensDirection.front,
-          deviceOrientation: camera.value.deviceOrientation,
-        ),
-        isBgra: Platform.isIOS,
+      final rotation = rotationForCameraFrame(
+        width: image.width,
+        height: image.height,
+        sensorOrientation: description.sensorOrientation,
+        isFrontCamera: description.lensDirection == CameraLensDirection.front,
+        deviceOrientation: camera.value.deviceOrientation,
       );
+      final detection = await _kit!.detectCameraFrame(
+        FaceCameraFrame.fromCameraImage(
+          image,
+          rotation: rotation,
+          mirrored: false,
+        ),
+      );
+      if (detection.failure?.code == FaceMatchErrorCode.frameDropped) return;
       if (!mounted ||
           generation != _initializationGeneration ||
           !identical(camera, _camera)) {
@@ -270,7 +275,7 @@ class _FaceVerificationViewState extends State<FaceVerificationView>
         if (quality != null && !quality.isAcceptable) {
           _failure = FaceMatchFailure(
             FaceMatchErrorCode.lowQuality,
-            quality.issues.first,
+            widget.texts.quality(quality.issues.first),
           );
         } else if (detection.failure?.code != FaceMatchErrorCode.noFace) {
           _failure = detection.failure;
@@ -282,6 +287,14 @@ class _FaceVerificationViewState extends State<FaceVerificationView>
         _autoCaptureScheduled = true;
         unawaited(Future<void>.delayed(Duration.zero, _verify));
       }
+    } catch (_) {
+      _setState(() {
+        _face = null;
+        _failure = const FaceMatchFailure(
+          FaceMatchErrorCode.processingFailure,
+          'This camera frame format is not supported.',
+        );
+      });
     } finally {
       await Future<void>.delayed(_effectiveConfig.liveDetectionInterval);
       _processingFrame = false;
@@ -371,7 +384,9 @@ class _FaceVerificationViewState extends State<FaceVerificationView>
     if (face == null) return 'no single face';
     final quality = _kit?.evaluateQuality(face, verification: true);
     if (quality == null) return 'engine not ready';
-    if (!quality.isAcceptable) return quality.issues.first;
+    if (!quality.isAcceptable) {
+      return widget.texts.quality(quality.issues.first);
+    }
     return 'READY';
   }
 
@@ -440,7 +455,7 @@ class _FaceVerificationViewState extends State<FaceVerificationView>
                           child: ConstrainedBox(
                             constraints: const BoxConstraints(maxWidth: 520),
                             child: SizedBox.expand(
-                              child: FaceCameraFrame(
+                              child: FaceCameraPreviewFrame(
                                 controller: camera,
                                 face: _face,
                                 isReady:

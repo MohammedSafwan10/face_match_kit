@@ -102,6 +102,8 @@ class FaceMatchTexts {
 
   String similarity(double value) =>
       '$similarityLabel ${(100 * value).toStringAsFixed(1)}%';
+
+  String quality(FaceQualityIssue issue) => faceQualityIssueMessage(issue);
 }
 
 typedef FaceOverlayBuilder =

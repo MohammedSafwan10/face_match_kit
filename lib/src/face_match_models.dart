@@ -1,6 +1,8 @@
 import 'dart:math' as math;
 import 'dart:typed_data';
 
+import 'face_pipeline_identity.dart';
+
 /// Stable identifiers for routine face-processing failures.
 enum FaceMatchErrorCode {
   invalidImage,
@@ -17,6 +19,8 @@ enum FaceMatchErrorCode {
   cameraUnavailable,
   cameraFailure,
   processingFailure,
+  operationTimeout,
+  frameDropped,
 }
 
 /// A typed, user-recoverable failure.
@@ -30,7 +34,7 @@ class FaceMatchFailure {
   String toString() => '${code.name}: $message';
 }
 
-/// Bounding box in absolute source-image pixels.
+/// Bounding box normalized to the analyzed image, where each edge is 0 through 1.
 class FaceBox {
   final double left;
   final double top;
@@ -71,10 +75,30 @@ class DetectedFace {
   });
 }
 
+/// Stable, localizable face-quality guidance.
+enum FaceQualityIssue {
+  betterLighting,
+  moveCloser,
+  landmarksUnavailable,
+  keepLevel,
+  straightenHead,
+  lookStraight,
+}
+
+String faceQualityIssueMessage(FaceQualityIssue issue) => switch (issue) {
+  FaceQualityIssue.betterLighting => 'Move into better lighting.',
+  FaceQualityIssue.moveCloser => 'Move closer to the camera.',
+  FaceQualityIssue.landmarksUnavailable =>
+    'Hold still while facial landmarks are measured.',
+  FaceQualityIssue.keepLevel => 'Keep your face level.',
+  FaceQualityIssue.straightenHead => 'Straighten your head.',
+  FaceQualityIssue.lookStraight => 'Look straight at the camera.',
+};
+
 /// Quality decision for a detected face.
 class FaceQuality {
   final bool isAcceptable;
-  final List<String> issues;
+  final List<FaceQualityIssue> issues;
 
   const FaceQuality({required this.isAcceptable, required this.issues});
 
@@ -118,10 +142,12 @@ class FaceSample {
 
 /// Versioned and portable biometric template.
 class FaceTemplate {
-  static const int currentSchemaVersion = 1;
-  static const int maximumSerializedDimensions = 4096;
+  static const int currentSchemaVersion = FacePipelineIdentity.schemaVersion;
+  static const int maximumSerializedDimensions =
+      FacePipelineIdentity.dimensions;
 
   final int schemaVersion;
+  final String templateId;
   final String modelId;
   final String modelHash;
   final String pipelineVersion;
@@ -132,6 +158,7 @@ class FaceTemplate {
 
   FaceTemplate({
     this.schemaVersion = currentSchemaVersion,
+    required this.templateId,
     required this.modelId,
     required this.modelHash,
     required this.pipelineVersion,
@@ -157,6 +184,19 @@ class FaceTemplate {
     if (modelId.trim().isEmpty || pipelineVersion.trim().isEmpty) {
       throw const FormatException(
         'Model and pipeline identifiers are required.',
+      );
+    }
+    if (!RegExp(r'^[0-9a-f]{32}$').hasMatch(templateId)) {
+      throw const FormatException(
+        'Template ID must be a lowercase 128-bit hexadecimal value.',
+      );
+    }
+    if (modelId != FacePipelineIdentity.modelId ||
+        modelHash != FacePipelineIdentity.modelHash ||
+        pipelineVersion != FacePipelineIdentity.pipelineVersion ||
+        dimensions != FacePipelineIdentity.dimensions) {
+      throw const FormatException(
+        'Face template uses an incompatible model or pipeline.',
       );
     }
     if (!RegExp(r'^[0-9a-f]{64}$').hasMatch(modelHash)) {
@@ -189,6 +229,7 @@ class FaceTemplate {
 
   Map<String, dynamic> toJson() => {
     'schemaVersion': schemaVersion,
+    'templateId': templateId,
     'modelId': modelId,
     'modelHash': modelHash,
     'pipelineVersion': pipelineVersion,
@@ -202,14 +243,29 @@ class FaceTemplate {
 
   factory FaceTemplate.fromJson(Map<String, dynamic> json) {
     try {
+      const expectedKeys = <String>{
+        'schemaVersion',
+        'templateId',
+        'modelId',
+        'modelHash',
+        'pipelineVersion',
+        'dimensions',
+        'samples',
+        'centroid',
+        'createdAt',
+      };
+      if (json.keys.toSet().difference(expectedKeys).isNotEmpty ||
+          expectedKeys.difference(json.keys.toSet()).isNotEmpty) {
+        throw const FormatException('Face template fields are invalid.');
+      }
       final dimensions = _strictInteger(json['dimensions'], 'dimensions');
       if (dimensions <= 0 || dimensions > maximumSerializedDimensions) {
         throw const FormatException('Invalid face template dimensions.');
       }
       final rawSamples = Map<String, dynamic>.from(json['samples'] as Map);
-      final expectedKeys = FacePose.values.map((pose) => pose.name).toSet();
-      if (rawSamples.keys.toSet().difference(expectedKeys).isNotEmpty ||
-          expectedKeys.difference(rawSamples.keys.toSet()).isNotEmpty) {
+      final expectedPoseKeys = FacePose.values.map((pose) => pose.name).toSet();
+      if (rawSamples.keys.toSet().difference(expectedPoseKeys).isNotEmpty ||
+          expectedPoseKeys.difference(rawSamples.keys.toSet()).isNotEmpty) {
         throw const FormatException(
           'Template samples must contain exactly front, slightLeft, and '
           'slightRight.',
@@ -226,6 +282,7 @@ class FaceTemplate {
       }
       return FaceTemplate(
         schemaVersion: _strictInteger(json['schemaVersion'], 'schemaVersion'),
+        templateId: json['templateId'] as String,
         modelId: json['modelId'] as String,
         modelHash: json['modelHash'] as String,
         pipelineVersion: json['pipelineVersion'] as String,

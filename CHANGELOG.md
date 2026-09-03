@@ -2,13 +2,19 @@
 
 - Initial beta release.
 - Added on-device face detection and package-owned result types.
-- Added canonical image normalization and eye-aligned MobileFaceNet embeddings.
+- Replaced the unidentified MobileFaceNet pipeline with bundled, hash-pinned
+  OpenCV YuNet detection and SFace INT8 128-dimensional recognition.
+- Added only the required Apache-licensed MediaPipe landmark and blendshape
+  models for live pose and blink guidance.
 - Added versioned, JSON-serializable three-pose templates.
 - Added 1:1 verification with typed compatibility and quality failures.
 - Added randomized blink/head-turn basic liveness state machine.
 - Added ready-made enrollment and verification camera widgets.
 - Added Android/iOS example application and migration/security documentation.
-- Added lossless canonical preprocessing and strict five-asset integrity checks.
+- Added schema-v2 templates with secure random template IDs, strict field and
+  compatibility parsing, three 128-value samples, and a verified centroid.
+- Added bounded canonical preprocessing, deterministic 1600-pixel resize,
+  RGB-to-BGR conversion, SFace align-crop, and four-asset integrity checks.
 - Added runtime configuration and strict template validation.
 - Added enrollment same-person consistency checks and per-call thresholds.
 - Hardened liveness transitions, camera lifecycle handling, rotation, capture
@@ -24,6 +30,6 @@
   and configuration changes.
 - Bounded serialized template dimensions and sanitized public processing
   failures so native exception details are not exposed.
-- Added a complete third-party/model asset inventory, SDK privacy guidance, and
-  a reproducible embedding-model provenance request while keeping publication
-  blocked until commercial redistribution rights are evidenced.
+- Removed `face_detection_tflite`, eleven unused transitive model assets, and
+  all legacy MobileFaceNet identifiers and pipeline code.
+- Added complete SFace, YuNet, and MediaPipe provenance/licence notices.

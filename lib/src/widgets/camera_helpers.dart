@@ -2,7 +2,7 @@ import 'package:camera/camera.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 
-import '../face_match_kit_base.dart';
+import '../face_camera_input.dart';
 import '../face_match_models.dart';
 
 /// Camera stream format supported by the native frame conversion pipeline.

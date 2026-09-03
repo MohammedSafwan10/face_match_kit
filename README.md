@@ -3,41 +3,47 @@
 [![CI](https://github.com/MohammedSafwan10/face_match_kit/actions/workflows/ci.yml/badge.svg)](https://github.com/MohammedSafwan10/face_match_kit/actions/workflows/ci.yml)
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 
-On-device face detection, guided enrollment, basic liveness challenges, and
-1:1 face verification for Flutter on Android and iOS.
+On-device face detection, guided three-pose enrollment, basic liveness, and
+1:1 face verification for Flutter on Android and iOS. No Firebase, backend, or
+internet connection is required.
 
-`face_match_kit` returns versioned biometric templates to your application. It
-does not require Firebase, a backend, or a network connection, and it does not
-retain captured images by default.
+> **Beta:** `0.1.0` is for evaluation. The randomized blink/head-turn flow is a
+> convenience barrier, not presentation-attack detection and not spoof-proof.
+> Accuracy calibration and the physical Android/iOS test matrix are release
+> gates documented in [PUBLISHING.md](PUBLISHING.md).
 
-> **Beta:** `0.1.0` is intended for evaluation. The included blink/head-turn
-> challenge is a convenience barrier, not advanced presentation-attack
-> detection. Do not describe it as spoof-proof.
->
-> **Publication gate:** the exact model is hash-pinned, but its original
-> weight provenance is not yet documented end to end. See
-> [MODEL_CARD.md](MODEL_CARD.md) before publishing this package.
+## What is bundled
 
-## Features
+The package brings its own pinned, integrity-checked on-device stack:
 
-- Detection with package-owned result types
-- Three-pose enrollment: front, slight left, slight right
-- Eye-aligned 192-dimensional MobileFaceNet embeddings
-- Lossless, orientation-normalized still-image preprocessing on both platforms
-- Startup integrity checks for every detector, landmark, and embedding asset
-- Strict model and preprocessing version checks
-- Versioned template format designed for Android/iOS portability (physical
-  cross-platform equivalence validation is still pending)
-- Ready-made enrollment and verification camera widgets
-- Low-level image APIs for custom interfaces
-- App-owned template persistence
+- OpenCV YuNet 2023mar for face detection and five landmarks
+- OpenCV SFace 2021dec INT8 for 128-dimensional embeddings
+- the required MediaPipe face-landmark and blendshape models for guidance
+- camera, image decoding, LiteRT, OpenCV, and hashing dependencies
+
+Applications add only `face_match_kit`; pub resolves its transitive
+dependencies and Flutter bundles the required native libraries and four model
+assets into the app. The first OpenCV Android build can take several minutes.
 
 ## Install
 
 ```yaml
 dependencies:
   face_match_kit: ^0.1.0
+
+# Required by opencv_dart so its native build contains YuNet and SFace.
+hooks:
+  user_defines:
+    dartcv4:
+      include_modules:
+        - imgproc
+        - dnn
+        - objdetect
 ```
+
+The hook block is currently required in the consuming application's root
+`pubspec.yaml`; Dart native-asset settings cannot be forced by a transitive
+package. It does not add another dependency.
 
 Android requires API 26 or later and camera permission:
 
@@ -46,35 +52,19 @@ Android requires API 26 or later and camera permission:
 <uses-feature android:name="android.hardware.camera.front" android:required="true" />
 ```
 
-The detector compiles native OpenCV assets on the first Android build. Install
-an Android NDK (side by side) and CMake through Android Studio's SDK Manager.
-The first build can take several minutes; later builds use the native-assets
-cache. On Windows, if NDK discovery fails, ensure `ANDROID_HOME` uses a path
-that the build hook can resolve (forward slashes avoid drive-path parsing
-issues in some toolchain versions).
-
-iOS 15.5 or later requires a camera usage description in `Info.plist`:
+iOS 15.5 or later requires:
 
 ```xml
 <key>NSCameraUsageDescription</key>
 <string>We use the camera for on-device face verification.</string>
 ```
 
-Test iOS recognition on a physical device. Lock the capture flow to portrait
-when supplying your own camera frames.
-
-The ready-made widgets let the `camera` plugin request access when the camera is
-opened; no separate runtime permission package is required. The platform
-manifest entries above are still mandatory.
-
 ## Ready-made UI
 
 ```dart
 FaceEnrollmentView(
   onCompleted: (result) async {
-    if (result.isSuccess) {
-      await saveJson(result.template!.toJson());
-    }
+    if (result.isSuccess) await saveTemplate(result.template!.toJson());
   },
 );
 
@@ -86,14 +76,15 @@ FaceVerificationView(
 );
 ```
 
-Both widgets support custom text, colors, thresholds, liveness enablement, and
-an overlay builder.
+The widgets own permission handling, camera preview, quality guidance,
+three-pose capture, basic liveness, retry, lifecycle recovery, and immediate
+automatic capture after the challenge. Text, colours, thresholds, liveness,
+callbacks, and the face overlay are customizable.
 
 ## Low-level API
 
 ```dart
 final kit = await FaceMatchKit.create();
-
 final detection = await kit.detect(jpegBytes);
 
 final enrollment = await kit.enroll(samples: [
@@ -105,68 +96,63 @@ final enrollment = await kit.enroll(samples: [
 final verification = await kit.verify(
   imageBytes: probe,
   template: enrollment.template!,
-  threshold: 0.62, // Optional; replace with your calibrated value.
 );
 
 await kit.dispose();
 ```
 
-Routine conditions such as no face, multiple faces, low quality, an
-incompatible template, or a threshold mismatch are returned through typed
-results. Initialization/model failures may throw.
+Custom camera interfaces use the exported `FaceCameraFrame` adapter and
+`detectCameraFrame`. Routine failures return typed results; corrupt model
+assets or initialization failures throw.
 
-## Privacy and storage
+## Canonical pipeline and templates
 
-A `FaceTemplate` is sensitive biometric data even though it is not a photograph.
-The integrating application is responsible for consent, encryption, access
-control, retention, deletion, breach handling, and applicable biometric laws.
-Do not place templates in logs or analytics.
+Encoded still images are size-checked, decoded in Dart, EXIF-oriented,
+explicitly unmirrored, deterministically limited to 1600 pixels on the longest
+side, converted from RGB to OpenCV BGR, detected with YuNet, aligned with
+`FaceRecognizerSF.alignCrop`, embedded by SFace, and L2-normalized.
 
-The package never uploads templates or images. Camera widgets attempt to delete
-temporary captures immediately after reading; deletion is best-effort because
-the operating system or camera plugin may already have moved or removed the
-file. Captured bytes can remain in managed memory until garbage collection and
-are not guaranteed to be zeroized. See [PRIVACY.md](PRIVACY.md),
-[SECURITY.md](SECURITY.md), and [MIGRATION.md](MIGRATION.md).
+Schema-v2 `FaceTemplate` JSON contains a secure random template ID, exact
+model/pipeline identity, three 128-value unit embeddings, their normalized
+centroid, and creation time. Parsing rejects unknown fields, wrong lengths,
+non-finite values, incompatible identities, non-unit vectors, and centroid
+tampering. Every template made by the earlier 192-dimensional pipeline must be
+re-enrolled; it cannot be converted safely.
 
-## Accuracy
+## Thresholds and accuracy
 
-The default similarity threshold (`0.60`) and enrollment-consistency threshold
-(`0.45`) are provisional. Calibrate them using
-genuine and impostor pairs from the devices, lighting, distance, and population
-your application supports. Publish FAR/FRR with any security claim.
+The default cosine threshold `0.363` is only OpenCV's pairwise benchmark
+starting point. Comparing against a three-sample centroid has a different score
+distribution, and the enrollment-consistency threshold is also provisional.
+Before production, calibrate representative genuine, impostor, and mixed-person
+pairs. The release target is a measured FAR upper confidence bound at or below
+0.1%, FRR at or below 5%, and at least 99.9% mixed-person enrollment rejection.
 
-The template schema is cross-platform by construction, but production release
-claims require physical-device testing in all four directions: Android→Android,
-Android→iOS, iOS→Android, and iOS→iOS.
+The JSON format is platform-portable, but equivalent Android/iOS embeddings
+and all four verification directions remain to be demonstrated on physical
+devices before a cross-platform accuracy claim.
 
-## Scope
+## Privacy and security
 
-Version 0.1 provides 1:1 verification: “Is this the enrolled user?” It does not
-perform 1:N identification across a gallery. Web, desktop, and advanced
-anti-spoofing are outside the supported scope.
+Processing is local and the package makes no network calls. Camera widgets do
+not deliberately retain images and make a best-effort attempt to delete camera
+temporary files after reading them; managed memory is not guaranteed to be
+zeroized. Templates are sensitive biometric data. The host application owns
+consent, authenticated encryption, account/tenant binding, access control,
+retention, deletion, revocation, audit, and breach obligations.
 
-## Example
+See [PRIVACY.md](PRIVACY.md), [SECURITY.md](SECURITY.md),
+[MIGRATION.md](MIGRATION.md), and [MODEL_CARD.md](MODEL_CARD.md).
 
-Run `cd example && flutter run` on an Android or iOS device. The example keeps
-the template only in memory and demonstrates explicit deletion.
+## Scope and licence
 
-## License and project identity
+Version 0.1 supports cooperative 1:1 verification on Android and iOS. It does
+not provide 1:N identification, web/desktop support, surveillance, or advanced
+anti-spoofing.
 
-The package source is available under the [Apache License 2.0](LICENSE). You may
-use, modify, and distribute it, including commercially, while preserving the
-licence and required notices. Apache-2.0 also includes an explicit patent grant.
-
-That source-code licence is not a representation that every independently
-trained model checkpoint has been cleared. Commercial publication remains
-blocked by the embedding-weight provenance described in
-[MODEL_CARD.md](MODEL_CARD.md). See
-[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for the resolved software and
-model inventory.
-
-The licence does not grant permission to present an unofficial fork as an
-official Face Match Kit release or to imply endorsement. See
-[TRADEMARKS.md](TRADEMARKS.md).
-
-Contributions are welcome. Read [CONTRIBUTING.md](CONTRIBUTING.md) and keep the
-model-provenance and accuracy gates in [PUBLISHING.md](PUBLISHING.md) intact.
+Package source is Apache-2.0 and may be used commercially subject to its terms
+and required notices. YuNet carries a separate MIT notice. Model licensing and
+remaining training-data provenance risk are documented in
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) and
+[MODEL_CARD.md](MODEL_CARD.md); commercial release requires legal acceptance
+of that remaining risk or authoritative clarification.

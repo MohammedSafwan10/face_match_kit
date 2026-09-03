@@ -7,7 +7,7 @@ import 'package:flutter/services.dart';
 import '../face_match_models.dart';
 import 'face_match_theme.dart';
 
-class FaceCameraFrame extends StatelessWidget {
+class FaceCameraPreviewFrame extends StatelessWidget {
   final CameraController controller;
   final DetectedFace? face;
   final bool isReady;
@@ -17,7 +17,7 @@ class FaceCameraFrame extends StatelessWidget {
   final FaceOverlayBuilder? overlayBuilder;
   final String? debugLabel;
 
-  const FaceCameraFrame({
+  const FaceCameraPreviewFrame({
     super.key,
     required this.controller,
     required this.face,
