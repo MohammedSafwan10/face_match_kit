@@ -7,6 +7,6 @@ abstract final class FacePipelineIdentity {
   static const dimensions = 128;
   static const pipelineVersion =
       'canonical-rgb1600-yunet2023mar-sface-aligncrop-v1'
-      '+opencv-2.2.1+4+litert-3.5.1+image-4.3.0'
+      '+opencv-2.2.2+litert-3.5.1+image-4.3.0'
       '+manifest-891edc554faff1ace955ebd23ff347fa719aed56188d89c112a06fdd9fd921db';
 }

@@ -312,12 +312,19 @@ class EnrollmentResult {
   final FaceTemplate? template;
   final FaceMatchFailure? failure;
 
-  const EnrollmentResult.success(FaceTemplate value)
-    : template = value,
-      failure = null;
+  /// Copy of the front-pose JPEG used for enrollment, for HR review photo
+  /// upload. Null on failure. Copied so widget zeroizing can clear originals.
+  final Uint8List? registrationImageBytes;
+
+  const EnrollmentResult.success(
+    FaceTemplate value, {
+    this.registrationImageBytes,
+  }) : template = value,
+       failure = null;
   const EnrollmentResult.failure(FaceMatchFailure value)
     : failure = value,
-      template = null;
+      template = null,
+      registrationImageBytes = null;
 
   bool get isSuccess => template != null && failure == null;
 }
@@ -368,6 +375,10 @@ List<double> normalizedCentroid(Iterable<List<double>> embeddings) {
 double cosineSimilarity(List<double> a, List<double> b) {
   if (a.isEmpty || a.length != b.length) {
     throw ArgumentError('Embedding dimensions must match.');
+  }
+  if (a.any((value) => !value.isFinite) ||
+      b.any((value) => !value.isFinite)) {
+    throw ArgumentError('Embeddings must contain only finite values.');
   }
   var dot = 0.0;
   var normA = 0.0;

@@ -6,6 +6,7 @@ export 'src/face_camera_input.dart';
 export 'src/face_match_kit_base.dart';
 export 'src/face_match_models.dart';
 export 'src/liveness.dart';
+export 'src/capture_flow.dart';
 export 'src/widgets/face_enrollment_view.dart';
 export 'src/widgets/face_match_theme.dart';
 export 'src/widgets/face_verification_view.dart';

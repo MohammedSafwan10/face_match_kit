@@ -11,6 +11,7 @@ import '../face_camera_input.dart';
 import '../face_match_kit_base.dart';
 import '../face_match_models.dart';
 import '../liveness.dart';
+import '../capture_flow.dart';
 import 'camera_helpers.dart';
 import 'face_capture_chrome.dart';
 import 'face_camera_frame.dart';
@@ -27,6 +28,7 @@ class FaceVerificationView extends StatefulWidget {
   final FaceMatchTexts texts;
   final FaceOverlayBuilder? overlayBuilder;
   final bool showDebugInfo;
+  final CaptureFlowPolicy captureFlow;
 
   const FaceVerificationView({
     super.key,
@@ -39,6 +41,7 @@ class FaceVerificationView extends StatefulWidget {
     this.texts = const FaceMatchTexts(),
     this.overlayBuilder,
     this.showDebugInfo = false,
+    this.captureFlow = CaptureFlowPolicy.legacy,
   });
 
   @override
@@ -66,6 +69,11 @@ class _FaceVerificationViewState extends State<FaceVerificationView>
   var _autoCaptureScheduled = false;
   var _retryAfterOperation = false;
   DateTime? _livenessCompletedAt;
+  CaptureFlow? _flow;
+  bool _completed = false;
+  bool get _modern =>
+      widget.captureFlow != CaptureFlowPolicy.legacy ||
+      _effectiveConfig.captureFlow != CaptureFlowPolicy.legacy;
 
   FaceMatchConfig get _effectiveConfig => widget.kit?.config ?? widget.config;
   bool get _livenessExpired =>
@@ -73,9 +81,12 @@ class _FaceVerificationViewState extends State<FaceVerificationView>
       DateTime.now().difference(_livenessCompletedAt!) >
           _effectiveConfig.livenessCompletionTimeout;
   bool get _livenessComplete =>
+      _modern ||
       !_effectiveConfig.livenessEnabled ||
       ((_liveness?.isComplete ?? false) && !_livenessExpired);
   bool get _captureReady =>
+      !_completed &&
+      (!_modern || (_flow?.ready ?? false)) &&
       _livenessComplete &&
       _face != null &&
       (_kit?.evaluateQuality(_face!, verification: true).isAcceptable ??
@@ -96,7 +107,9 @@ class _FaceVerificationViewState extends State<FaceVerificationView>
     final kitChanged = !identical(oldWidget.kit, widget.kit);
     final configChanged =
         widget.kit == null && oldWidget.config != widget.config;
-    if (kitChanged || configChanged) {
+    if (kitChanged ||
+        configChanged ||
+        oldWidget.captureFlow != widget.captureFlow) {
       unawaited(_reconfigure());
       return;
     }
@@ -177,6 +190,16 @@ class _FaceVerificationViewState extends State<FaceVerificationView>
       _description = description;
       _camera = controller;
       await controller.startImageStream(_processFrame);
+      if (!_isCurrentInitialization(generation)) {
+        // Reconfigured/disposed while the stream was starting: tear down
+        // this stale controller instead of leaking a streaming camera.
+        try {
+          await controller.stopImageStream();
+        } catch (_) {}
+        await controller.dispose();
+        controller = null;
+        return;
+      }
       controller = null;
       _setState(() {});
     } catch (error) {
@@ -203,6 +226,14 @@ class _FaceVerificationViewState extends State<FaceVerificationView>
   }
 
   void _resetLiveness() {
+    _flow = _modern
+        ? CaptureFlow(
+            widget.captureFlow == CaptureFlowPolicy.legacy
+                ? _effectiveConfig.captureFlow
+                : widget.captureFlow,
+          )
+        : null;
+    _completed = false;
     _missingFaceFrames = 0;
     _autoCaptureScheduled = false;
     _livenessCompletedAt = null;
@@ -229,6 +260,9 @@ class _FaceVerificationViewState extends State<FaceVerificationView>
       return;
     }
     _processingFrame = true;
+    // Same arrival-timestamp fix as enrollment: stamping after the awaited
+    // detection inflated the inter-frame gap by inference latency.
+    final frameArrivedAt = DateTime.now();
     try {
       final rotation = rotationForCameraFrame(
         width: image.width,
@@ -252,24 +286,38 @@ class _FaceVerificationViewState extends State<FaceVerificationView>
       }
       final face = detection.hasExactlyOneFace ? detection.faces.single : null;
       var livenessJustCompleted = false;
-      if (_livenessExpired) _resetLiveness();
-      if (face == null) {
-        _missingFaceFrames++;
-        if (_missingFaceFrames >= _effectiveConfig.livenessFaceLossTolerance) {
-          _resetLiveness();
-        }
-      } else {
-        _missingFaceFrames = 0;
-        if (!_livenessComplete) {
-          final wasComplete = _liveness!.isComplete;
-          _liveness!.update(face);
-          livenessJustCompleted = !wasComplete && _liveness!.isComplete;
-          if (livenessJustCompleted) _livenessCompletedAt = DateTime.now();
+      if (!_modern) {
+        if (_livenessExpired) _resetLiveness();
+        if (face == null) {
+          _missingFaceFrames++;
+          if (_missingFaceFrames >=
+              _effectiveConfig.livenessFaceLossTolerance) {
+            _resetLiveness();
+          }
+        } else {
+          _missingFaceFrames = 0;
+          if (!_livenessComplete) {
+            final wasComplete = _liveness!.isComplete;
+            _liveness!.update(face);
+            livenessJustCompleted = !wasComplete && _liveness!.isComplete;
+            if (livenessJustCompleted) {
+              _livenessCompletedAt = frameArrivedAt;
+            }
+          }
         }
       }
       final quality = face == null
           ? null
-          : _kit!.evaluateQuality(face, verification: true);
+          : _kit!.evaluateQuality(face, verification: !_modern);
+      if (_modern) {
+        final invalidated = _flow!.update(
+          face,
+          multiple: detection.faces.length > 1,
+          quality: face != null && (_kit!.evaluateQuality(face).isAcceptable),
+          now: frameArrivedAt,
+        );
+        if (invalidated) _autoCaptureScheduled = false;
+      }
       _setState(() {
         _face = face;
         if (quality != null && !quality.isAcceptable) {
@@ -283,7 +331,8 @@ class _FaceVerificationViewState extends State<FaceVerificationView>
           _failure = null;
         }
       });
-      if (livenessJustCompleted && !_autoCaptureScheduled) {
+      if ((_modern ? _captureReady : livenessJustCompleted) &&
+          !_autoCaptureScheduled) {
         _autoCaptureScheduled = true;
         unawaited(Future<void>.delayed(Duration.zero, _verify));
       }
@@ -316,13 +365,19 @@ class _FaceVerificationViewState extends State<FaceVerificationView>
       await camera.stopImageStream();
       file = await camera.takePicture();
       final bytes = await file.readAsBytes();
-      if (!_isCurrentOperation(operation)) return;
+      if (!_isCurrentOperation(operation)) {
+        await _ensureImageStream();
+        return;
+      }
       final result = await _kit!.verify(
         imageBytes: bytes,
         template: template,
         threshold: threshold,
       );
-      if (!_isCurrentOperation(operation)) return;
+      if (!_isCurrentOperation(operation)) {
+        await _ensureImageStream();
+        return;
+      }
       _setState(() {
         _result = result;
         _failure = result.failure;
@@ -339,6 +394,7 @@ class _FaceVerificationViewState extends State<FaceVerificationView>
       _notifyError(failure);
       await _ensureImageStream();
     } finally {
+      _autoCaptureScheduled = false;
       if (file != null) await _deleteCapture(file.path);
       _setState(() => _busy = false);
       if (mounted && _appActive && !_reconfiguring && _camera == null) {
@@ -367,6 +423,7 @@ class _FaceVerificationViewState extends State<FaceVerificationView>
   }
 
   String get _instruction {
+    if (_modern) return widget.texts.pose(_flow?.pose ?? FacePose.front);
     if (_result?.isMatch ?? false) return widget.texts.success;
     return livenessGuidanceOrFallback(
       texts: widget.texts,
@@ -444,11 +501,12 @@ class _FaceVerificationViewState extends State<FaceVerificationView>
                         theme: widget.theme,
                       ),
                       SizedBox(height: compact ? 10 : 14),
-                      FacePoseProgress(
-                        activeIndex: _livenessComplete ? 2 : 1,
-                        accentColor: widget.theme.secondaryAccentColor,
-                        theme: widget.theme,
-                      ),
+                      if (!_modern)
+                        FacePoseProgress(
+                          activeIndex: _livenessComplete ? 2 : 1,
+                          accentColor: widget.theme.secondaryAccentColor,
+                          theme: widget.theme,
+                        ),
                       SizedBox(height: compact ? 10 : 14),
                       Expanded(
                         child: Center(
@@ -572,6 +630,7 @@ class _FaceVerificationViewState extends State<FaceVerificationView>
   Future<void> _disposeCamera() async {
     _initializationGeneration++;
     _operationGeneration++;
+    _flow?.reset();
     final camera = _camera;
     _camera = null;
     await camera?.dispose();
@@ -590,7 +649,14 @@ class _FaceVerificationViewState extends State<FaceVerificationView>
         camera.value.isStreamingImages) {
       return;
     }
-    await camera.startImageStream(_processFrame);
+    try {
+      await camera.startImageStream(_processFrame);
+    } catch (error) {
+      // Restart failed (e.g. camera disconnected mid-flight). Surface state
+      // instead of throwing out of unawaited callers; recovery paths that
+      // call this already notified via onError.
+      _setState(() => _failure = _cameraFailure(error));
+    }
   }
 
   FaceMatchFailure _cameraFailure(Object error, {bool initialization = false}) {
@@ -618,7 +684,8 @@ class _FaceVerificationViewState extends State<FaceVerificationView>
   }
 
   void _notifyCompleted(VerificationResult result, int operation) {
-    if (!_isCurrentOperation(operation)) return;
+    if (!_isCurrentOperation(operation) || _completed) return;
+    _completed = true;
     try {
       widget.onCompleted(result);
     } catch (error, stackTrace) {
@@ -650,10 +717,17 @@ class _FaceVerificationViewState extends State<FaceVerificationView>
   }
 
   Future<void> _deleteCapture(String path) async {
-    try {
-      await File(path).delete();
-    } catch (_) {
-      // Camera plugin temporary files may already have been removed.
+    for (var attempt = 0; attempt < 2; attempt++) {
+      try {
+        await File(path).delete();
+        return;
+      } catch (_) {
+        // Camera plugin temporary files may already have been removed.
+        // One retry covers transient file locks; face bytes must not linger.
+        if (attempt == 0) {
+          await Future<void>.delayed(const Duration(milliseconds: 200));
+        }
+      }
     }
   }
 

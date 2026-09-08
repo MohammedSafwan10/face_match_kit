@@ -166,13 +166,14 @@ class FaceEngine {
   final ReceivePort _events;
   final Stream<Object?> _eventStream;
   final Map<int, Completer<Map<String, Object?>>> _pending = {};
+  StreamSubscription<Object?>? _eventSubscription;
   int _nextId = 0;
   bool _disposed = false;
   bool _liveInFlight = false;
   _PendingLive? _latestLive;
 
   FaceEngine._(this._isolate, this._commands, this._events, this._eventStream) {
-    _eventStream.listen(_handleEvent);
+    _eventSubscription = _eventStream.listen(_handleEvent);
   }
 
   static Future<FaceEngine> create({
@@ -210,6 +211,9 @@ class FaceEngine {
       final engine = FaceEngine._(isolate, commands, events, eventStream);
       return engine;
     } catch (_) {
+      try {
+        await subscription.cancel();
+      } catch (_) {}
       isolate.kill(priority: Isolate.immediate);
       events.close();
       rethrow;
@@ -287,12 +291,22 @@ class FaceEngine {
     final id = event['id'];
     if (id is! int) return;
     final completer = _pending.remove(id);
-    if (completer == null) return;
+    if (completer == null || completer.isCompleted) return;
     final error = event['error'];
     if (error is String) {
-      completer.completeError(StateError(error));
-    } else {
+      // Reconstruct the worker-side error type so callers can distinguish
+      // malformed images (invalidImage) from processing failures.
+      if (event['errorKind'] == 'format') {
+        completer.completeError(FormatException(error));
+      } else {
+        completer.completeError(StateError(error));
+      }
+    } else if (event['result'] is Map) {
       completer.complete(Map<String, Object?>.from(event['result']! as Map));
+    } else {
+      completer.completeError(
+        StateError('Face engine returned a malformed response.'),
+      );
     }
   }
 
@@ -311,6 +325,10 @@ class FaceEngine {
       // The isolate is terminated below even if native cleanup stalls.
     }
     _isolate.kill(priority: Isolate.immediate);
+    try {
+      await _eventSubscription?.cancel();
+    } catch (_) {}
+    _eventSubscription = null;
     _events.close();
     for (final completer in _pending.values) {
       if (!completer.isCompleted) {
@@ -372,7 +390,11 @@ Future<void> _workerMain(Object? initial) async {
             : worker!.analyzeLive(command);
         events.send({'id': id, 'result': result});
       } catch (error) {
-        events.send({'id': id, 'error': '$error'});
+        events.send({
+          'id': id,
+          'error': '$error',
+          'errorKind': error is FormatException ? 'format' : 'other',
+        });
       }
     });
   });

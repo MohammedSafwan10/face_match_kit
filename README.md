@@ -81,6 +81,20 @@ three-pose capture, basic liveness, retry, lifecycle recovery, and immediate
 automatic capture after the challenge. Text, colours, thresholds, liveness,
 callbacks, and the face overlay are customizable.
 
+Capture flows (`CaptureFlowPolicy`):
+
+- `guidedEnrollment` — front plus both sides in randomized order for
+  enrollment. Live readiness uses the same yaw windows the still-enrollment
+  gate accepts (front ±12°, sides 10–42°).
+- `singleTurnVerification` — legacy centre, turn, and return sequence.
+- `simpleVerification` — one straight look only, for easy check-ins. The
+  enrolled centroid already averages all three poses, so turns add friction
+  without accuracy gain.
+
+Successful enrollment also returns `registrationImageBytes`: a copy of the
+front-pose JPEG for host-side review-photo upload (`null` on failure). The
+widget zeroizes its own sample bytes afterwards, so the copy stays valid.
+
 ## Low-level API
 
 ```dart

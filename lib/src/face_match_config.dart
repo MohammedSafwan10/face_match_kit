@@ -1,5 +1,9 @@
+import 'capture_flow.dart';
+
 /// Configuration for detection, enrollment, and verification.
 class FaceMatchConfig {
+  final CaptureFlowPolicy captureFlow;
+
   /// Provisional OpenCV SFace cosine threshold.
   ///
   /// Production applications should calibrate this against their own capture
@@ -46,6 +50,7 @@ class FaceMatchConfig {
   final Duration liveDetectionInterval;
 
   const FaceMatchConfig({
+    this.captureFlow = CaptureFlowPolicy.legacy,
     this.verificationThreshold = 0.363,
     this.enrollmentConsistencyThreshold = 0.30,
     this.minimumFaceFraction = 0.18,
@@ -176,6 +181,7 @@ class FaceMatchConfig {
   bool operator ==(Object other) =>
       identical(this, other) ||
       other is FaceMatchConfig &&
+          captureFlow == other.captureFlow &&
           verificationThreshold == other.verificationThreshold &&
           enrollmentConsistencyThreshold ==
               other.enrollmentConsistencyThreshold &&
@@ -198,6 +204,7 @@ class FaceMatchConfig {
 
   @override
   int get hashCode => Object.hash(
+    captureFlow,
     verificationThreshold,
     enrollmentConsistencyThreshold,
     minimumFaceFraction,

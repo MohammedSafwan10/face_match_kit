@@ -1,6 +1,7 @@
 import 'dart:math';
 
 import 'face_match_models.dart';
+import 'capture_flow.dart';
 
 /// Basic challenge actions. These are not advanced anti-spoofing.
 enum LivenessAction { blink, turnLeft, turnRight }
@@ -119,19 +120,7 @@ class LivenessSession {
   }
 
   bool _isContinuous(FaceBox current) {
-    final previous = _previousBox;
-    if (previous == null) return true;
-    final width = max(1.0, previous.width);
-    final previousCenterX = (previous.left + previous.right) / 2;
-    final previousCenterY = (previous.top + previous.bottom) / 2;
-    final currentCenterX = (current.left + current.right) / 2;
-    final currentCenterY = (current.top + current.bottom) / 2;
-    final movement = sqrt(
-      pow(currentCenterX - previousCenterX, 2) +
-          pow(currentCenterY - previousCenterY, 2),
-    );
-    final sizeRatio = current.width / width;
-    return movement <= width * 0.65 && sizeRatio >= 0.55 && sizeRatio <= 1.8;
+    return CaptureFlow.continuous(_previousBox, current);
   }
 
   bool _conditionFor(

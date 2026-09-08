@@ -11,6 +11,7 @@ import '../face_camera_input.dart';
 import '../face_match_kit_base.dart';
 import '../face_match_models.dart';
 import '../liveness.dart';
+import '../capture_flow.dart';
 import 'camera_helpers.dart';
 import 'face_capture_chrome.dart';
 import 'face_camera_frame.dart';
@@ -26,6 +27,7 @@ class FaceEnrollmentView extends StatefulWidget {
   final FaceMatchTexts texts;
   final FaceOverlayBuilder? overlayBuilder;
   final bool showDebugInfo;
+  final CaptureFlowPolicy captureFlow;
 
   const FaceEnrollmentView({
     super.key,
@@ -37,6 +39,7 @@ class FaceEnrollmentView extends StatefulWidget {
     this.texts = const FaceMatchTexts(),
     this.overlayBuilder,
     this.showDebugInfo = false,
+    this.captureFlow = CaptureFlowPolicy.legacy,
   });
 
   @override
@@ -63,21 +66,34 @@ class _FaceEnrollmentViewState extends State<FaceEnrollmentView>
   var _missingFaceFrames = 0;
   var _autoCaptureScheduled = false;
   DateTime? _livenessCompletedAt;
+  CaptureFlow? _flow;
+  bool _completed = false;
+  bool get _modern =>
+      widget.captureFlow != CaptureFlowPolicy.legacy ||
+      _effectiveConfig.captureFlow != CaptureFlowPolicy.legacy;
 
   FaceMatchConfig get _effectiveConfig => widget.kit?.config ?? widget.config;
-  FacePose get _pose => FacePose.values[_samples.length.clamp(0, 2)];
+  FacePose get _pose => _modern
+      ? (_flow?.pose ?? FacePose.front)
+      : FacePose.values[_samples.length.clamp(0, 2)];
+  // Liveness must be re-earned after the timeout no matter how many samples
+  // were already captured; otherwise the window between poses is unbounded.
   bool get _livenessExpired =>
-      _samples.isEmpty &&
       _livenessCompletedAt != null &&
       DateTime.now().difference(_livenessCompletedAt!) >
           _effectiveConfig.livenessCompletionTimeout;
   bool get _livenessComplete =>
+      _modern ||
       !_effectiveConfig.livenessEnabled ||
       ((_liveness?.isComplete ?? false) && !_livenessExpired);
   bool get _captureReady =>
+      !_completed &&
+      (!_modern || (_flow?.ready ?? false)) &&
       _livenessComplete &&
       _face != null &&
-      poseIsReady(_pose, _face) &&
+      (_modern
+          ? CaptureFlow.matches(_pose, _face?.yaw)
+          : poseIsReady(_pose, _face)) &&
       (_kit?.evaluateQuality(_face!).isAcceptable ?? false) &&
       !_busy;
 
@@ -94,7 +110,11 @@ class _FaceEnrollmentViewState extends State<FaceEnrollmentView>
     final kitChanged = !identical(oldWidget.kit, widget.kit);
     final configChanged =
         widget.kit == null && oldWidget.config != widget.config;
-    if (kitChanged || configChanged) unawaited(_reconfigure());
+    if (kitChanged ||
+        configChanged ||
+        oldWidget.captureFlow != widget.captureFlow) {
+      unawaited(_reconfigure());
+    }
   }
 
   Future<void> _reconfigure() async {
@@ -107,7 +127,7 @@ class _FaceEnrollmentViewState extends State<FaceEnrollmentView>
       final disposeOldKit = _ownsKit;
       _kit = null;
       _ownsKit = false;
-      _samples.clear();
+      _zeroizeSamples();
       setStateIfMounted(() {
         _face = null;
         _failure = null;
@@ -166,6 +186,16 @@ class _FaceEnrollmentViewState extends State<FaceEnrollmentView>
       _description = description;
       _camera = controller;
       await controller.startImageStream(_processFrame);
+      if (!_isCurrentInitialization(generation)) {
+        // Reconfigured/disposed while the stream was starting: tear down
+        // this stale controller instead of leaking a streaming camera.
+        try {
+          await controller.stopImageStream();
+        } catch (_) {}
+        await controller.dispose();
+        controller = null;
+        return;
+      }
       controller = null;
       setStateIfMounted(() {});
     } catch (error) {
@@ -204,6 +234,11 @@ class _FaceEnrollmentViewState extends State<FaceEnrollmentView>
       return;
     }
     _processingFrame = true;
+    // Timestamp at arrival, not after inference. `detectCameraFrame` awaits
+    // YuNet + landmarks + blendshapes (hundreds of ms); stamping after the
+    // await made every frame look like a >500ms gap and perpetually reset
+    // CaptureFlow, so guided enrollment stuck on "Look straight".
+    final frameArrivedAt = DateTime.now();
     try {
       final rotation = rotationForCameraFrame(
         width: image.width,
@@ -227,23 +262,39 @@ class _FaceEnrollmentViewState extends State<FaceEnrollmentView>
       }
       final face = result.hasExactlyOneFace ? result.faces.single : null;
       var livenessJustCompleted = false;
-      if (_livenessExpired) _resetLiveness();
-      if (face == null) {
-        _missingFaceFrames++;
-        if (_samples.isEmpty &&
-            _missingFaceFrames >= _effectiveConfig.livenessFaceLossTolerance) {
-          _resetLiveness();
-        }
-      } else {
-        _missingFaceFrames = 0;
-        if (!_livenessComplete) {
-          final wasComplete = _liveness!.isComplete;
-          _liveness!.update(face);
-          livenessJustCompleted = !wasComplete && _liveness!.isComplete;
-          if (livenessJustCompleted) _livenessCompletedAt = DateTime.now();
+      if (!_modern) {
+        if (_livenessExpired) _resetLiveness();
+        if (face == null) {
+          _missingFaceFrames++;
+          if (_samples.isEmpty &&
+              _missingFaceFrames >=
+                  _effectiveConfig.livenessFaceLossTolerance) {
+            _resetLiveness();
+          }
+        } else {
+          _missingFaceFrames = 0;
+          if (!_livenessComplete) {
+            final wasComplete = _liveness!.isComplete;
+            _liveness!.update(face);
+            livenessJustCompleted = !wasComplete && _liveness!.isComplete;
+            // Stamp arrival time so one slow inference doesn't eat the
+            // whole liveness-completion window.
+            if (livenessJustCompleted) {
+              _livenessCompletedAt = frameArrivedAt;
+            }
+          }
         }
       }
       final quality = face == null ? null : _kit!.evaluateQuality(face);
+      if (_modern) {
+        final invalidated = _flow!.update(
+          face,
+          multiple: result.faces.length > 1,
+          quality: face != null && (_kit!.evaluateQuality(face).isAcceptable),
+          now: frameArrivedAt,
+        );
+        if (invalidated) _zeroizeSamples();
+      }
       setStateIfMounted(() {
         _face = face;
         _failure = quality != null && !quality.isAcceptable
@@ -255,7 +306,8 @@ class _FaceEnrollmentViewState extends State<FaceEnrollmentView>
             ? null
             : result.failure;
       });
-      if (livenessJustCompleted && _samples.isEmpty && !_autoCaptureScheduled) {
+      if ((_modern ? _captureReady : livenessJustCompleted) &&
+          !_autoCaptureScheduled) {
         _autoCaptureScheduled = true;
         unawaited(Future<void>.delayed(Duration.zero, _capture));
       }
@@ -274,6 +326,10 @@ class _FaceEnrollmentViewState extends State<FaceEnrollmentView>
   }
 
   Future<void> _capture() async {
+    if (!mounted) {
+      _autoCaptureScheduled = false;
+      return;
+    }
     if (!_captureReady || _camera == null) {
       _autoCaptureScheduled = false;
       return;
@@ -281,19 +337,29 @@ class _FaceEnrollmentViewState extends State<FaceEnrollmentView>
     final operation = ++_operationGeneration;
     final camera = _camera!;
     final pose = _pose;
-    setState(() => _busy = true);
+    setStateIfMounted(() => _busy = true);
     XFile? file;
     try {
       await camera.stopImageStream();
       file = await camera.takePicture();
       final bytes = await file.readAsBytes();
-      if (!_isCurrentOperation(operation)) return;
+      if (!_isCurrentOperation(operation)) {
+        await _ensureImageStream();
+        return;
+      }
       _samples.add(FaceSample(imageBytes: bytes, pose: pose));
+      if (_modern) {
+        _flow!.captured();
+        unawaited(HapticFeedback.selectionClick());
+      }
       _face = null;
       if (_samples.length == FacePose.values.length) {
         final result = await _kit!.enroll(samples: List.of(_samples));
-        if (!_isCurrentOperation(operation)) return;
-        _samples.clear();
+        if (!_isCurrentOperation(operation)) {
+          await _ensureImageStream();
+          return;
+        }
+        _zeroizeSamples();
         if (result.isSuccess) {
           _notifyCompleted(result, operation);
         } else {
@@ -312,9 +378,11 @@ class _FaceEnrollmentViewState extends State<FaceEnrollmentView>
       if (!_isCurrentOperation(operation)) return;
       _failure = _cameraFailure(error);
       _notifyError(_failure!);
+      if (_modern) _zeroizeSamples();
       if (_samples.isEmpty) _resetLiveness();
       await _ensureImageStream();
     } finally {
+      _autoCaptureScheduled = false;
       if (file != null) await _deleteCapture(file.path);
       setStateIfMounted(() => _busy = false);
       if (mounted && _appActive && !_reconfiguring && _camera == null) {
@@ -324,6 +392,9 @@ class _FaceEnrollmentViewState extends State<FaceEnrollmentView>
   }
 
   String get _instruction {
+    if (_modern) {
+      return '${(_samples.length + 1).clamp(1, 3)} of 3 · ${widget.texts.pose(_pose)}';
+    }
     return livenessGuidanceOrFallback(
       texts: widget.texts,
       session: _liveness,
@@ -405,10 +476,18 @@ class _FaceEnrollmentViewState extends State<FaceEnrollmentView>
                                 face: _face,
                                 isReady: _captureReady,
                                 theme: widget.theme,
-                                topOverlay: FacePoseProgress(
-                                  activeIndex: _samples.length.clamp(0, 2),
-                                  theme: widget.theme,
-                                ),
+                                topOverlay: _modern
+                                    ? FaceCameraTitle(
+                                        label:
+                                            '${(_samples.length + 1).clamp(1, 3)} of 3',
+                                      )
+                                    : FacePoseProgress(
+                                        activeIndex: _samples.length.clamp(
+                                          0,
+                                          2,
+                                        ),
+                                        theme: widget.theme,
+                                      ),
                                 bottomOverlay: FaceCameraPill(
                                   label: _failure?.message ?? _instruction,
                                   icon: _failure != null
@@ -500,6 +579,8 @@ class _FaceEnrollmentViewState extends State<FaceEnrollmentView>
   Future<void> _disposeCamera() async {
     _initializationGeneration++;
     _operationGeneration++;
+    _flow?.reset();
+    _zeroizeSamples();
     final camera = _camera;
     _camera = null;
     await camera?.dispose();
@@ -512,6 +593,14 @@ class _FaceEnrollmentViewState extends State<FaceEnrollmentView>
       mounted && _appActive && generation == _operationGeneration;
 
   void _resetLiveness() {
+    _flow = _modern
+        ? CaptureFlow(
+            widget.captureFlow == CaptureFlowPolicy.legacy
+                ? _effectiveConfig.captureFlow
+                : widget.captureFlow,
+          )
+        : null;
+    _completed = false;
     _missingFaceFrames = 0;
     _autoCaptureScheduled = false;
     _livenessCompletedAt = null;
@@ -532,7 +621,14 @@ class _FaceEnrollmentViewState extends State<FaceEnrollmentView>
         camera.value.isStreamingImages) {
       return;
     }
-    await camera.startImageStream(_processFrame);
+    try {
+      await camera.startImageStream(_processFrame);
+    } catch (error) {
+      // Restart failed (e.g. camera disconnected mid-flight). Surface state
+      // instead of throwing out of unawaited callers; no double onError here
+      // because recovery paths already notified.
+      setStateIfMounted(() => _failure = _cameraFailure(error));
+    }
   }
 
   FaceMatchFailure _cameraFailure(Object error, {bool initialization = false}) {
@@ -560,7 +656,8 @@ class _FaceEnrollmentViewState extends State<FaceEnrollmentView>
   }
 
   void _notifyCompleted(EnrollmentResult result, int operation) {
-    if (!_isCurrentOperation(operation)) return;
+    if (!_isCurrentOperation(operation) || _completed) return;
+    _completed = true;
     try {
       widget.onCompleted(result);
     } catch (error, stackTrace) {
@@ -592,10 +689,17 @@ class _FaceEnrollmentViewState extends State<FaceEnrollmentView>
   }
 
   Future<void> _deleteCapture(String path) async {
-    try {
-      await File(path).delete();
-    } catch (_) {
-      // Camera plugin temporary files may already have been removed.
+    for (var attempt = 0; attempt < 2; attempt++) {
+      try {
+        await File(path).delete();
+        return;
+      } catch (_) {
+        // Camera plugin temporary files may already have been removed.
+        // One retry covers transient file locks; face bytes must not linger.
+        if (attempt == 0) {
+          await Future<void>.delayed(const Duration(milliseconds: 200));
+        }
+      }
     }
   }
 
@@ -603,11 +707,24 @@ class _FaceEnrollmentViewState extends State<FaceEnrollmentView>
   void dispose() {
     _appActive = false;
     _operationGeneration++;
-    _samples.clear();
+    _zeroizeSamples();
     WidgetsBinding.instance.removeObserver(this);
     unawaited(_disposeCamera());
     if (_ownsKit) unawaited(_kit?.dispose());
     super.dispose();
+  }
+
+  /// Overwrites captured face bytes before dropping references so image
+  /// data does not linger in memory until GC.
+  void _zeroizeSamples() {
+    for (final sample in _samples) {
+      try {
+        sample.imageBytes.fillRange(0, sample.imageBytes.length, 0);
+      } catch (_) {
+        // Best effort only.
+      }
+    }
+    _samples.clear();
   }
 }
 

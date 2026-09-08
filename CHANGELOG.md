@@ -1,3 +1,13 @@
+## Unreleased
+
+- Added `CaptureFlowPolicy.simpleVerification`: single straight look for
+  verification, no turns.
+- Aligned live pose windows with the still-enrollment gate (front ±12°,
+  sides 10–42°) and widened the frame-gap tolerance for on-device inference
+  latency; views now stamp arrival time instead of post-inference time.
+- Added `EnrollmentResult.registrationImageBytes` (front-pose JPEG copy for
+  host review-photo upload).
+
 ## 0.1.0
 
 - Initial beta release.

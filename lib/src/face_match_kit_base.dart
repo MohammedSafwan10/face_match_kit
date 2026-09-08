@@ -42,6 +42,9 @@ class FaceMatchKit {
     FaceMatchConfig config = const FaceMatchConfig(),
   }) async {
     config.validate();
+    // Best-effort sweep of orphaned model files from crashed/killed runs.
+    // Never fails creation: each delete is individually guarded.
+    await _sweepOrphanedTemporaryFiles();
     final assets = <String, Uint8List>{};
     for (final entry in _assetHashes.entries) {
       final data = await rootBundle.load(
@@ -208,6 +211,11 @@ class FaceMatchKit {
         samples: embeddings,
         centroid: normalizedCentroid(embeddings.values),
         createdAt: DateTime.now().toUtc(),
+      ),
+      // Front sample is the review photo. Copy: callers (camera widgets)
+      // zeroize the original sample bytes after enroll for privacy.
+      registrationImageBytes: Uint8List.fromList(
+        byPose[FacePose.front]!.imageBytes,
       ),
     );
   }
@@ -474,6 +482,9 @@ class FaceMatchKit {
   Future<T> _track<T>(Future<T> Function() operation) async {
     _activeOperations++;
     try {
+      // Re-check after increment: an op that passed the pre-check in
+      // _runStill/_runLive must not run uncounted if dispose() won the race.
+      if (_disposed) throw StateError('FaceMatchKit has been disposed.');
       return await operation();
     } finally {
       _activeOperations--;
@@ -521,5 +532,28 @@ Future<void> _deleteTemporaryFile(String path) async {
     if (await file.exists()) await file.delete();
   } catch (_) {
     // Temporary model cleanup is best effort; no biometric image is stored.
+  }
+}
+
+/// Deletes orphaned `face_match_kit_sface_*.onnx` files left behind by
+/// crashed or killed runs. Each delete is individually guarded so a sweep
+/// failure can never break creation.
+Future<void> _sweepOrphanedTemporaryFiles() async {
+  try {
+    final dir = Directory.systemTemp;
+    await for (final entity in dir.list(followLinks: false)) {
+      try {
+        final name = entity.path.split(Platform.pathSeparator).last;
+        if (entity is File &&
+            name.startsWith('face_match_kit_sface_') &&
+            name.endsWith('.onnx')) {
+          await entity.delete();
+        }
+      } catch (_) {
+        // Keep sweeping the rest.
+      }
+    }
+  } catch (_) {
+    // Sweep is best effort.
   }
 }
