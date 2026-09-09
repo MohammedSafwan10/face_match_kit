@@ -7,6 +7,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../face_match_config.dart';
+import '../frame_pacing.dart';
 import '../face_camera_input.dart';
 import '../face_match_kit_base.dart';
 import '../face_match_models.dart';
@@ -260,6 +261,7 @@ class _FaceVerificationViewState extends State<FaceVerificationView>
       return;
     }
     _processingFrame = true;
+    final processingTimer = Stopwatch()..start();
     // Same arrival-timestamp fix as enrollment: stamping after the awaited
     // detection inflated the inter-frame gap by inference latency.
     final frameArrivedAt = DateTime.now();
@@ -345,7 +347,15 @@ class _FaceVerificationViewState extends State<FaceVerificationView>
         );
       });
     } finally {
-      await Future<void>.delayed(_effectiveConfig.liveDetectionInterval);
+      // Pace from frame start, rather than adding a full idle interval after
+      // inference. Keep the single-frame guard held throughout the wait.
+      final remaining = remainingFrameDelay(
+        _effectiveConfig.liveDetectionInterval,
+        processingTimer.elapsed,
+      );
+      if (remaining > Duration.zero) {
+        await Future<void>.delayed(remaining);
+      }
       _processingFrame = false;
     }
   }
