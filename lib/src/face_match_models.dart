@@ -376,8 +376,7 @@ double cosineSimilarity(List<double> a, List<double> b) {
   if (a.isEmpty || a.length != b.length) {
     throw ArgumentError('Embedding dimensions must match.');
   }
-  if (a.any((value) => !value.isFinite) ||
-      b.any((value) => !value.isFinite)) {
+  if (a.any((value) => !value.isFinite) || b.any((value) => !value.isFinite)) {
     throw ArgumentError('Embeddings must contain only finite values.');
   }
   var dot = 0.0;

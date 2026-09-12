@@ -19,8 +19,8 @@ void main() {
   }
 
   Map<FacePose, List<double>> allPoses() => {
-        for (final pose in FacePose.values) pose: phaseEmbedding(pose.index + 1),
-      };
+    for (final pose in FacePose.values) pose: phaseEmbedding(pose.index + 1),
+  };
 
   FaceTemplate validTemplate({
     String? templateId,

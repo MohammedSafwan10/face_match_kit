@@ -181,24 +181,58 @@ void main() {
   });
   test('completed verification expires even with continuous frames', () {
     final f = CaptureFlow(CaptureFlowPolicy.singleTurnVerification);
-    stable(f, 0); stable(f, 450); stable(f, 900);
+    stable(f, 0);
+    stable(f, 450);
+    stable(f, 900);
     for (var ms = 1350; ms <= 6150; ms += 150) {
-      expect(f.update(face(0), multiple: false, quality: true, now: epoch.add(Duration(milliseconds: ms))), isFalse);
+      expect(
+        f.update(
+          face(0),
+          multiple: false,
+          quality: true,
+          now: epoch.add(Duration(milliseconds: ms)),
+        ),
+        isFalse,
+      );
     }
-    expect(f.update(face(0), multiple: false, quality: true, now: epoch.add(const Duration(milliseconds: 6300))), isTrue);
+    expect(
+      f.update(
+        face(0),
+        multiple: false,
+        quality: true,
+        now: epoch.add(const Duration(milliseconds: 6300)),
+      ),
+      isTrue,
+    );
     expect(f.ready, isFalse);
   });
   test('reset clears capture readiness and prior stage', () {
     final f = CaptureFlow(CaptureFlowPolicy.guidedEnrollment);
-    stable(f, 0); f.captured(); f.reset();
-    expect(f.step, 0); expect(f.ready, isFalse);
+    stable(f, 0);
+    f.captured();
+    f.reset();
+    expect(f.step, 0);
+    expect(f.ready, isFalse);
     expect(() => f.captured(), throwsStateError);
   });
   test('face jump invalidates progress', () {
     final f = CaptureFlow(CaptureFlowPolicy.singleTurnVerification);
     stable(f, 0);
-    const other = DetectedFace(box: FaceBox(left: .75, top: .2, right: .95, bottom: .6), score: .99, faceFraction: .2, yaw: 0);
-    expect(f.update(other, multiple: false, quality: true, now: epoch.add(const Duration(milliseconds: 450))), isTrue);
+    const other = DetectedFace(
+      box: FaceBox(left: .75, top: .2, right: .95, bottom: .6),
+      score: .99,
+      faceFraction: .2,
+      yaw: 0,
+    );
+    expect(
+      f.update(
+        other,
+        multiple: false,
+        quality: true,
+        now: epoch.add(const Duration(milliseconds: 450)),
+      ),
+      isTrue,
+    );
     expect(f.step, 0);
   });
   test('slow inference cadence still reaches readiness', () {
@@ -236,10 +270,7 @@ void main() {
   test('legacy and single-turn verification share one behavior', () {
     // Both map to [front, side, front]; pin the equivalence so a future
     // divergence is deliberate, not accidental.
-    final legacy = CaptureFlow(
-      CaptureFlowPolicy.legacy,
-      random: Random(7),
-    );
+    final legacy = CaptureFlow(CaptureFlowPolicy.legacy, random: Random(7));
     final turn = CaptureFlow(
       CaptureFlowPolicy.singleTurnVerification,
       random: Random(7),
