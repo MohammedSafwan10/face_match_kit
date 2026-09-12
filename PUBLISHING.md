@@ -1,6 +1,8 @@
 # Publishing checklist
 
-Do not publish `0.1.0` until every unchecked gate below is complete.
+`0.1.0` is published as a beta and transferred to the `nexdark.com`
+publisher. The unchecked gates below remain open and must close before any
+stable release or production-readiness claim.
 
 - [x] Remove `face_detection_tflite`, MobileFaceNet, and unused transitive
       assets from the dependency graph and archive.
@@ -19,9 +21,14 @@ Do not publish `0.1.0` until every unchecked gate below is complete.
       iOS->Android, and iOS->iOS on at least two Android and two iPhone models.
 - [ ] Add and pass the planned widget, lifecycle, timeout, queue, native
       inference, fixture, and cross-platform tests.
-- [ ] Pass format, analyze, unit/widget tests, Android build, iOS no-codesign
-      build, dartdoc, pana/package score, and clean publish dry-run.
-- [ ] Ensure `dart pub publish --dry-run` reports zero warnings.
+- [x] Pass format, analyze, unit/widget tests, dartdoc, pana/package score,
+      and clean publish dry-run.
+- [ ] Pass Android example build and iOS no-codesign example build in CI
+      (currently red; `calib3d` added to example `include_modules`, awaiting
+      verification).
+- [x] Ensure `dart pub publish --dry-run` reports zero warnings.
+- [x] Publish `0.1.0` with the authorized Google account and transfer it to
+      the verified `nexdark.com` publisher in pub.dev administration.
 - [ ] Replace pub screenshots with actual enrollment and verification UI.
 - [ ] Review consent, retention, deletion, revocation, authenticated template
       storage, and biometric-law obligations for each launch region.

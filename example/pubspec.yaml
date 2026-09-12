@@ -27,3 +27,4 @@ hooks:
         - imgproc
         - dnn
         - objdetect
+        - calib3d
